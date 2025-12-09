@@ -9,24 +9,17 @@ from streamlit_folium import st_folium
 from geopy.distance import geodesic
 import matplotlib.pyplot as plt
 
-# 동일 디렉토리에 위치한 환경 설정 모듈 및 최적화 모듈 임포트
 from environment import SyntheticEnvironment 
 from optimizers import BaseStationOptimizer
 
 st.set_page_config(layout="wide", page_title="Simulator")
 
-# ==========================================
-# 세션 상태 초기화
-# ==========================================
 if 'map_view' not in st.session_state:
     st.session_state['map_view'] = {
         'center': [37.4979, 127.0276], 
         'zoom': 14
     }
 
-# ==========================================
-# 사이드바  
-# ==========================================
 with st.sidebar:
     st.title("시뮬레이터 제어")
     
@@ -59,7 +52,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("2. 시각화 설정")
-    # [추가] 지도 보기 모드 선택
     map_layer_mode = st.radio("지도 표시 모드", ["트래픽 분포 (Traffic)", "커버리지 상태 (Status)"], index=1)
     
     st.markdown("---")
@@ -84,9 +76,6 @@ with st.sidebar:
     
     optimize_clicked = st.button("계산 실행")
 
-# ==========================================
-# 메인 화면
-# ==========================================
 st.title("기지국 위치 최적화 시뮬레이터")
 
 # 통계 정보 표시
@@ -221,7 +210,6 @@ if 'env' in st.session_state:
     for idx, (i, row) in enumerate(df.iterrows()):
         r_lat, r_lon, val = row['lat'], row['lon'], row['traffic']
         
-        # 기본값 (Traffic Only)
         color = '#ff0000' 
         opacity = min(val / 150.0, 0.8)
         status_text = "N/A"
