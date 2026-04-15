@@ -37,7 +37,17 @@ pip install -r requirements.txt
 streamlit run app.py            # 또는 run_app.bat (Windows)
 ```
 - Python 3.10+ (레포에 3.13 venv 흔적 있음)
-- `requirements.txt`의 `sklearn`은 deprecated 별칭 — 실패 시 `scikit-learn`으로 교체
+
+## 회귀 테스트
+```bash
+pip install -r requirements-dev.txt
+playwright install chromium
+pytest                          # tests/test_regression.py 실행
+```
+- `tests/conftest.py`가 streamlit을 자동 시작/종료 (헤드리스, 자유 포트)
+- `tests/test_regression.py`: 7개 smoke test (앱 로드 · 데이터 생성 · 알고리즘 실행 · 패턴 선택 · 콘솔 에러)
+- Streamlit selectbox의 DOM detach 경쟁으로 인해 **모든 알고리즘 × 모든 패턴**을 매트릭스로 돌리지 않는다. 대표(K-Means, ring) 하나씩만 end-to-end로, 나머지는 UI 등록 여부만 검증.
+- 알고리즘/패턴을 **추가**한 경우에는 selectbox 테스트가 자동으로 잡아낸다 (REGISTRY / PATTERN_CHOICES 목록 assert).
 
 ## 작업 시 규칙
 
