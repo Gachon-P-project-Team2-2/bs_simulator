@@ -5,7 +5,7 @@
 상태 표기: `[ ]` 대기 · `[~]` 진행 중 · `[x]` 완료 · `[!]` 블록
 
 ## 진행 중
-- [~] **[bs_opt 통합 Phase 1]** Genetic Algorithm 포팅 — 다음 브랜치
+_(없음)_
 
 ## 대기
 - [ ] **[bs_opt 통합]** 트래픽 패턴 8종 포팅 — `bs_opt/kmj/core/grid.py::generate_synthetic_traffic`의 패턴을 `SyntheticEnvironment`에 흡수, UI selectbox 노출
@@ -16,6 +16,7 @@
 - [ ] Playwright MCP로 UI 회귀 테스트 자동화 (MCP 이제 사용 가능)
 
 ## 완료
+- [x] **[bs_opt 통합 Phase 1]** Genetic Algorithm 포팅 (2026-04-15) — `optimizers/metaheuristics/genetic.py`. Playwright 테스트에서 K-Means(6.1%) 대비 11.7% 커버리지 달성.
 - [x] **[Phase 2]** Optimizer as Plugin 아키텍처 마이그레이션 (2026-04-15) — `optimizers/` 패키지, base.py/kmeans.py/metaheuristics/, HyperParam 스키마 기반 UI 자동 생성, Playwright 회귀 테스트 통과
 - [x] 아키텍처 결정 문서화 (ADR) (2026-04-15) — `docs/architecture_decisions.md`. "Optimizer as Plugin" 구조 채택.
 - [x] bs_opt 통합 가능성 검토 (2026-04-15) — 보고서 `docs/bs_opt_integration_review.md`, 3-phase 로드맵 제시
