@@ -24,13 +24,19 @@ class SimulatedAnnealingOptimizer(Optimizer):
 
     def optimize(self, problem: ProblemInput, n_stations: int,
                  iterations: int = 1000, initial_temp: float = 100.0,
-                 cooling_rate: float = 0.99, step_size: float = 50.0) -> OptimizationResult:
+                 cooling_rate: float = 0.99, step_size: float = 50.0,
+                 callback=None) -> OptimizationResult:
         current = random_stations(n_stations, problem)
         current_score = calculate_score(current, problem)
         best = current.copy()
         best_score = current_score
         temp = initial_temp
-        history = [{"iter": 0, "current_score": current_score, "best_score": best_score, "temp": temp}]
+        snap_interval = max(1, iterations // 50)
+        cb_interval = snap_interval * 3  # 콜백은 스냅샷 3번마다 (~17회)
+        history = [{"iter": 0, "current_score": current_score, "best_score": best_score, "temp": temp,
+                    "stations": best.copy()}]
+        if callback is not None:
+            callback(0, iterations, best.copy(), best_score)
 
         for it in range(1, iterations + 1):
             next_stations = clip_stations(perturb(current, step_size), problem)
@@ -42,7 +48,12 @@ class SimulatedAnnealingOptimizer(Optimizer):
                     best_score = current_score
                     best = current.copy()
             temp *= cooling_rate
-            history.append({"iter": it, "current_score": current_score, "best_score": best_score, "temp": temp})
+            entry: dict = {"iter": it, "current_score": current_score, "best_score": best_score, "temp": temp}
+            if it % snap_interval == 0 or it == iterations:
+                entry["stations"] = best.copy()
+            if callback is not None and (it % cb_interval == 0 or it == iterations):
+                callback(it, iterations, best.copy(), best_score)
+            history.append(entry)
 
         return OptimizationResult(
             stations=best,

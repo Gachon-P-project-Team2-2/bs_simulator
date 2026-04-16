@@ -8,6 +8,8 @@ from folium import GeoJson
 from streamlit_folium import st_folium
 from geopy.distance import geodesic
 import matplotlib.pyplot as plt
+plt.rcParams['font.family'] = 'Malgun Gothic'
+plt.rcParams['axes.unicode_minus'] = False
 
 from environment import SyntheticEnvironment
 from optimizers import (
@@ -202,6 +204,72 @@ if ('opt_results' in st.session_state
         ax.legend()
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
+
+# 기지국 위치 변화 시각화 (history에 stations 스냅샷이 있을 때)
+if ('opt_results' in st.session_state
+        and opt_mode == "고정 개수 (Fixed)"
+        and st.session_state['opt_results'].get('history')
+        and 'env' in st.session_state):
+    hist = st.session_state['opt_results']['history']
+    snapshots = [h for h in hist if 'stations' in h]
+    if len(snapshots) >= 2:
+        with st.expander("기지국 위치 변화 (Station Movement)", expanded=False):
+            env = st.session_state['env']
+            n_snaps = len(snapshots)
+            _problem = ProblemInput.from_env(env, radius_m=radius_m, capacity=capacity)
+
+            # geo 변환된 트래픽 히트맵 extent
+            _geo_extent = [env.lon_min, env.lon_max, env.lat_min, env.lat_max]
+
+            # 모든 스냅샷의 geo 좌표를 미리 계산
+            _all_geo = [convert_to_geo(s['stations'], _problem) for s in snapshots]
+
+            def _draw_snap(ax, snap, snap_i, init_geo):
+                """스냅샷 하나를 geo 좌표로 차트에 그리기."""
+                ax.imshow(np.flipud(env.traffic_map), extent=_geo_extent,
+                          cmap='YlOrRd', alpha=0.5, aspect='auto')
+                st_geo = _all_geo[snap_i]
+
+                # 이동 궤적 (처음 ~ 현재 스냅샷)
+                if snap_i >= 1:
+                    for si in range(len(st_geo)):
+                        trail_lon = [_all_geo[j][si, 1] for j in range(snap_i + 1)]
+                        trail_lat = [_all_geo[j][si, 0] for j in range(snap_i + 1)]
+                        ax.plot(trail_lon, trail_lat, '-', color='blue', alpha=0.4, lw=1.2, zorder=3)
+
+                # 초기 위치 — 회색 ×
+                ax.scatter(init_geo[:, 1], init_geo[:, 0], c='gray', marker='x',
+                           s=80, linewidths=1.5, zorder=4)
+                # 현재 위치 — 빨간 ●
+                ax.scatter(st_geo[:, 1], st_geo[:, 0], c='red', marker='o', s=100,
+                           edgecolors='white', linewidths=1.5, zorder=5)
+
+                ax.set_xlabel('Longitude')
+                ax.set_ylabel('Latitude')
+                ax.set_title(f"Iteration {snap['iter']}  |  Score: {snap['best_score']:.1f}")
+
+            _init_geo = convert_to_geo(snapshots[0]['stations'], _problem)
+
+            # 슬라이더 + 재생 버튼
+            snap_idx = st.slider(
+                "스냅샷 선택", 0, n_snaps - 1, n_snaps - 1,
+                key="snap_slider",
+            )
+            if st.button("▶ 애니메이션 재생"):
+                chart_slot = st.empty()
+                progress_slot = st.empty()
+                for frame in range(n_snaps):
+                    fig2, ax2 = plt.subplots(figsize=(8, 6))
+                    _draw_snap(ax2, snapshots[frame], frame, _init_geo)
+                    chart_slot.pyplot(fig2)
+                    plt.close(fig2)
+                    progress_slot.progress(frame / max(n_snaps - 1, 1))
+                    time.sleep(0.3)
+                progress_slot.empty()
+            else:
+                fig2, ax2 = plt.subplots(figsize=(8, 6))
+                _draw_snap(ax2, snapshots[snap_idx], snap_idx, _init_geo)
+                st.pyplot(fig2)
 
 # 지도 표시
 m = folium.Map(

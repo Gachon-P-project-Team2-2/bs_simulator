@@ -40,9 +40,11 @@ class GeneticAlgorithmOptimizer(Optimizer):
                  pop_size: int = 40, n_generations: int = 200,
                  crossover_rate: float = 0.9, mutation_rate: float = 0.2,
                  tournament_size: int = 3, elitism: int = 2,
-                 mutation_step: float = 50.0) -> OptimizationResult:
+                 mutation_step: float = 50.0, callback=None) -> OptimizationResult:
 
         elitism = min(elitism, pop_size)
+        snap_interval = max(1, n_generations // 50)
+        cb_interval = snap_interval * 3
 
         # 초기 population
         population = [random_stations(n_stations, problem) for _ in range(pop_size)]
@@ -52,7 +54,10 @@ class GeneticAlgorithmOptimizer(Optimizer):
         best = population[best_idx].copy()
         best_score = float(scores[best_idx])
         history = [{"iter": 0, "best_score": best_score,
-                    "gen_best_score": float(scores.max())}]
+                    "gen_best_score": float(scores.max()),
+                    "stations": best.copy()}]
+        if callback is not None:
+            callback(0, n_generations, best.copy(), best_score)
 
         for gen in range(1, n_generations + 1):
             new_pop: list[np.ndarray] = []
@@ -81,8 +86,13 @@ class GeneticAlgorithmOptimizer(Optimizer):
             if gen_best_score > best_score:
                 best_score = gen_best_score
                 best = population[int(np.argmax(scores))].copy()
-            history.append({"iter": gen, "best_score": best_score,
-                            "gen_best_score": gen_best_score})
+            entry: dict = {"iter": gen, "best_score": best_score,
+                           "gen_best_score": gen_best_score}
+            if gen % snap_interval == 0 or gen == n_generations:
+                entry["stations"] = best.copy()
+            if callback is not None and (gen % cb_interval == 0 or gen == n_generations):
+                callback(gen, n_generations, best.copy(), best_score)
+            history.append(entry)
 
         return OptimizationResult(
             stations=best,

@@ -19,12 +19,18 @@ class RandomWalkOptimizer(Optimizer):
     ]
 
     def optimize(self, problem: ProblemInput, n_stations: int,
-                 iterations: int = 1000, step_size: float = 50.0) -> OptimizationResult:
+                 iterations: int = 1000, step_size: float = 50.0,
+                 callback=None) -> OptimizationResult:
         current = random_stations(n_stations, problem)
         current_score = calculate_score(current, problem)
         best = current.copy()
         best_score = current_score
-        history = [{"iter": 0, "current_score": current_score, "best_score": best_score}]
+        snap_interval = max(1, iterations // 50)
+        cb_interval = snap_interval * 3
+        history = [{"iter": 0, "current_score": current_score, "best_score": best_score,
+                    "stations": best.copy()}]
+        if callback is not None:
+            callback(0, iterations, best.copy(), best_score)
 
         for it in range(1, iterations + 1):
             next_stations = clip_stations(perturb(current, step_size), problem)
@@ -34,7 +40,12 @@ class RandomWalkOptimizer(Optimizer):
                 if current_score > best_score:
                     best_score = current_score
                     best = current.copy()
-            history.append({"iter": it, "current_score": current_score, "best_score": best_score})
+            entry: dict = {"iter": it, "current_score": current_score, "best_score": best_score}
+            if it % snap_interval == 0 or it == iterations:
+                entry["stations"] = best.copy()
+            if callback is not None and (it % cb_interval == 0 or it == iterations):
+                callback(it, iterations, best.copy(), best_score)
+            history.append(entry)
 
         return OptimizationResult(
             stations=best,
