@@ -97,9 +97,34 @@ def _extract_polygons_from_geometry(geo_obj: Any) -> list[Polygon]:
     return []
 
 
-def _normalize_polygon_area_to_m2(poly: Polygon, lat_ref: float | None = None) -> float:
+def _looks_like_lonlat(poly: Polygon) -> bool:
+    """Heuristic: True when polygon coordinates look like longitude/latitude."""
+    try:
+        minx, miny, maxx, maxy = poly.bounds
+    except Exception:
+        return False
+    return (
+        -180.0 <= minx <= 180.0
+        and -180.0 <= maxx <= 180.0
+        and -90.0 <= miny <= 90.0
+        and -90.0 <= maxy <= 90.0
+    )
+
+
+def _normalize_polygon_area_to_m2(
+    poly: Polygon,
+    lat_ref: float | None = None,
+    *,
+    coordinates_are_meters: bool | None = None,
+) -> float:
     if not isinstance(poly, Polygon) or poly.is_empty:
         return 0.0
+
+    # App-level code usually converts OSM/GeoJSON polygons to the local meter
+    # coordinate system before filtering. In that case ``poly.area`` is already m².
+    if coordinates_are_meters is True or (coordinates_are_meters is None and not _looks_like_lonlat(poly)):
+        return float(poly.area)
+
     lat_ref = float(lat_ref if lat_ref is not None else poly.centroid.y)
     deg_to_m_lat = 110_540.0
     deg_to_m_lon = 111_320.0 * math.cos(math.radians(lat_ref))
@@ -164,8 +189,18 @@ def filter_polygons(
     polygons: Iterable[Polygon],
     min_area_m2: float,
     max_obstacles: int | None = None,
+    *,
+    coordinates_are_meters: bool | None = None,
 ) -> list[Polygon]:
-    """면적 임계치/개수 조건으로 폴리곤을 필터한다."""
+    """면적 임계치/개수 조건으로 폴리곤을 필터한다.
+
+    Args:
+        polygons: Geo 좌표계 또는 local meter 좌표계 폴리곤.
+        min_area_m2: 최소 면적 임계값.
+        max_obstacles: 반환할 최대 폴리곤 개수.
+        coordinates_are_meters: True이면 ``poly.area``를 m²로 그대로 사용한다.
+            False이면 위경도 좌표로 보고 근사 변환한다. None이면 좌표 범위로 자동 추정한다.
+    """
     filtered: list[tuple[Polygon, float]] = []
     for poly in polygons:
         if not isinstance(poly, Polygon) or poly.is_empty:
@@ -173,10 +208,17 @@ def filter_polygons(
         fixed = poly.buffer(0)
         if fixed.is_empty:
             continue
-        area_m2 = _normalize_polygon_area_to_m2(fixed)
-        if min_area_m2 is not None and min_area_m2 > 0 and area_m2 < min_area_m2:
-            continue
-        filtered.append((fixed, area_m2))
+        if isinstance(fixed, MultiPolygon):
+            parts = [p for p in fixed.geoms if isinstance(p, Polygon) and not p.is_empty]
+        elif isinstance(fixed, Polygon):
+            parts = [fixed]
+        else:
+            parts = []
+        for part in parts:
+            area_m2 = _normalize_polygon_area_to_m2(part, coordinates_are_meters=coordinates_are_meters)
+            if min_area_m2 is not None and min_area_m2 > 0 and area_m2 < min_area_m2:
+                continue
+            filtered.append((part, area_m2))
     filtered.sort(key=lambda item: item[1], reverse=True)
     polygons_sorted = [poly for poly, _ in filtered]
     if max_obstacles is None or max_obstacles <= 0:
@@ -222,7 +264,7 @@ def _build_overpass_query(
         else:
             clauses.append(f'way["{t}"]({south},{west},{north},{east});')
     if not clauses:
-        clauses = ['way["building"](...);']
+        clauses = [f'way["building"]({south},{west},{north},{east});']
     joined = "".join(clauses)
     return f"[out:json][timeout:25];({joined});(._;>;);out geom;"
 

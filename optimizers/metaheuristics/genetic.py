@@ -9,12 +9,18 @@ bs_opt 원본의 토너먼트 선택, 단일점 교차, 포인트 변이 구조 
 """
 from __future__ import annotations
 
+import logging
+import time
+
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 from ..base import (
     HyperParam, Optimizer, OptimizationResult, ProblemInput, compute_metrics,
 )
 from ._shared import calculate_score, clip_stations, random_stations
+
+log = logging.getLogger(__name__)
 
 
 class GeneticAlgorithmOptimizer(Optimizer):
@@ -41,10 +47,16 @@ class GeneticAlgorithmOptimizer(Optimizer):
                  crossover_rate: float = 0.9, mutation_rate: float = 0.2,
                  tournament_size: int = 3, elitism: int = 2,
                  mutation_step: float = 50.0, callback=None) -> OptimizationResult:
+        t0 = time.perf_counter()
+        log.info(
+            "GA start: n_stations=%d pop=%d gen=%d cx=%.2f mut=%.2f elite=%d N=%d",
+            n_stations, pop_size, n_generations, crossover_rate, mutation_rate, elitism, len(problem.X),
+        )
 
         elitism = min(elitism, pop_size)
         snap_interval = max(1, n_generations // 50)
         cb_interval = snap_interval * 3
+        log_interval = max(1, n_generations // 10)
 
         # 초기 population
         population = [random_stations(n_stations, problem) for _ in range(pop_size)]
@@ -55,7 +67,7 @@ class GeneticAlgorithmOptimizer(Optimizer):
         best_score = float(scores[best_idx])
         history = [{"iter": 0, "best_score": best_score,
                     "gen_best_score": float(scores.max()),
-                    "stations": best.copy()}]
+                    "stations": best.tolist()}]   # ndarray → list (JSON 직렬화 가능)
         if callback is not None:
             callback(0, n_generations, best.copy(), best_score)
 
@@ -64,7 +76,7 @@ class GeneticAlgorithmOptimizer(Optimizer):
 
             # Elitism: 상위 elitism개 그대로 복사
             if elitism > 0:
-                elite_idxs = np.argsort(scores)[-elitism:]  # score↑이므로 상위 = 뒤쪽
+                elite_idxs = np.argsort(scores)[-elitism:]
                 for i in elite_idxs:
                     new_pop.append(population[int(i)].copy())
 
@@ -86,13 +98,27 @@ class GeneticAlgorithmOptimizer(Optimizer):
             if gen_best_score > best_score:
                 best_score = gen_best_score
                 best = population[int(np.argmax(scores))].copy()
+
             entry: dict = {"iter": gen, "best_score": best_score,
                            "gen_best_score": gen_best_score}
             if gen % snap_interval == 0 or gen == n_generations:
-                entry["stations"] = best.copy()
+                entry["stations"] = best.tolist()   # ndarray → list
             if callback is not None and (gen % cb_interval == 0 or gen == n_generations):
                 callback(gen, n_generations, best.copy(), best_score)
             history.append(entry)
+
+            if gen % log_interval == 0 or gen == n_generations:
+                score_std = float(np.std(scores))
+                log.debug("GA gen=%d/%d best=%.4f gen_best=%.4f score_std=%.4f",
+                          gen, n_generations, best_score, gen_best_score, score_std)
+                if score_std < 1e-6:
+                    log.warning("GA gen=%d: population 수렴 (score_std≈0) — "
+                                "mutation_rate 또는 mutation_step을 높이세요.", gen)
+
+        elapsed = time.perf_counter() - t0
+        log.info("GA done: best_score=%.4f elapsed=%.3fs", best_score, elapsed)
+        if best_score == 0.0:
+            log.warning("GA score=0: 커버리지가 전혀 없습니다.")
 
         return OptimizationResult(
             stations=best,
@@ -111,22 +137,32 @@ def _tournament_select(population: list[np.ndarray], scores: np.ndarray,
     best_i = idxs[0]
     best_s = scores[best_i]
     for i in idxs[1:]:
-        if scores[i] > best_s:   # score↑ 규약
+        if scores[i] > best_s:
             best_i = i
             best_s = scores[i]
     return population[int(best_i)].copy()
+
+
+def _align_to(ref: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """target 행 순서를 ref와 최소 거리(Hungarian)로 재정렬.
+
+    교차 전 두 부모의 기지국 역할을 맞춰, 같은 인덱스끼리 교환해도
+    동일 핫스팟을 담당하는 기지국끼리 섞이도록 한다.
+    """
+    diff = ref[:, np.newaxis, :] - target[np.newaxis, :, :]
+    cost = np.sum(diff ** 2, axis=2)
+    _, col = linear_sum_assignment(cost)
+    return target[col]
 
 
 def _crossover(p1: np.ndarray, p2: np.ndarray, rate: float,
                problem: ProblemInput) -> tuple[np.ndarray, np.ndarray]:
     if np.random.rand() > rate or len(p1) <= 1:
         return p1.copy(), p2.copy()
-    # (n_bs, 2) → flatten → single-point → reshape
-    a = p1.reshape(-1)
-    b = p2.reshape(-1)
-    point = np.random.randint(1, len(a))
-    c1 = np.concatenate([a[:point], b[point:]]).reshape(p1.shape)
-    c2 = np.concatenate([b[:point], a[point:]]).reshape(p2.shape)
+    p2a = _align_to(p1, p2)
+    point = np.random.randint(1, len(p1))
+    c1 = np.concatenate([p1[:point], p2a[point:]])
+    c2 = np.concatenate([p2a[:point], p1[point:]])
     clip_stations(c1, problem)
     clip_stations(c2, problem)
     return c1, c2

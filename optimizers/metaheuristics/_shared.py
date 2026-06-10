@@ -6,45 +6,44 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..base import ProblemInput
+from ..base import ProblemInput, sinr_coverage
+from ..base import _resolve_station_params
 
 
 def calculate_score(stations: np.ndarray, problem: ProblemInput) -> float:
     """기지국 배치의 점수 (높을수록 좋음).
 
-    score = Σ min(station_load, capacity) + 0.1 · covered_grid_count
+    score = Σ min(station_load, capacity)
+
+    SINR 기반 커버리지와 best-SINR 기지국 배정 사용.
+    (이전 버전의 + 0.1·covered_area 항 제거 — 임의 가중치 없이 트래픽 단위 통일)
     """
-    if len(stations) == 0:
+    K = len(stations)
+    if K == 0:
         return 0.0
 
-    diff = problem.X[:, np.newaxis, :] - stations[np.newaxis, :, :]
-    dist_sq = np.sum(diff ** 2, axis=2)
-    radius_sq = problem.radius_m ** 2
+    is_covered, serving_idx, _ = sinr_coverage(stations, problem)
+    _, capacities = _resolve_station_params(problem, K, default_radius=0.0, default_capacity=0.0)
 
-    covered_mask = dist_sq <= radius_sq
-    is_covered = np.any(covered_mask, axis=1)
-
-    dist_sq_masked = np.where(covered_mask, dist_sq, np.inf)
-    nearest_station_idx = np.argmin(dist_sq_masked, axis=1)
-
-    station_loads = np.zeros(len(stations))
     valid_indices = np.where(is_covered)[0]
     if len(valid_indices) == 0:
         return 0.0
 
-    assigned = nearest_station_idx[valid_indices]
-    traffic_values = problem.weights[valid_indices]
-    np.add.at(station_loads, assigned, traffic_values)
+    station_loads = np.zeros(K)
+    np.add.at(station_loads, serving_idx[valid_indices], problem.weights[valid_indices])
 
-    effective_loads = np.minimum(station_loads, problem.capacity)
-    total_covered_traffic = np.sum(effective_loads)
-    total_covered_area = len(valid_indices)
-
-    return float(total_covered_traffic + total_covered_area * 0.1)
+    return float(np.sum(np.minimum(station_loads, capacities)))
 
 
 def random_stations(k: int, problem: ProblemInput) -> np.ndarray:
     """범위 내 균일 랜덤 초기 배치."""
+    station_pool = get_station_pool(problem)
+    if station_pool is not None:
+        if len(station_pool) == 0:
+            raise ValueError("기지국을 설치할 수 있는 위치가 없습니다.")
+        replace = len(station_pool) < k
+        idx = np.random.choice(len(station_pool), size=k, replace=replace)
+        return np.asarray(station_pool[idx], dtype=float).copy()
     x = np.random.uniform(0, problem.width_m, k)
     y = np.random.uniform(0, problem.height_m, k)
     return np.column_stack([x, y])
@@ -52,9 +51,37 @@ def random_stations(k: int, problem: ProblemInput) -> np.ndarray:
 
 def clip_stations(stations: np.ndarray, problem: ProblemInput) -> np.ndarray:
     """기지국 좌표를 맵 범위 안으로 클립 (in-place)."""
+    station_pool = get_station_pool(problem)
+    if station_pool is not None:
+        if len(station_pool) == 0:
+            raise ValueError("기지국을 설치할 수 있는 위치가 없습니다.")
+        stations[:] = snap_stations_to_candidates(stations, problem)
+        return stations
     stations[:, 0] = np.clip(stations[:, 0], 0, problem.width_m)
     stations[:, 1] = np.clip(stations[:, 1], 0, problem.height_m)
     return stations
+
+
+def get_station_pool(problem: ProblemInput) -> np.ndarray | None:
+    pool = getattr(problem, "feasible_station_points", None)
+    if pool is not None:
+        return np.asarray(pool, dtype=float)
+    pool = getattr(problem, "station_candidate_points", None)
+    if pool is not None:
+        return np.asarray(pool, dtype=float)
+    return None
+
+
+def snap_stations_to_candidates(stations: np.ndarray, problem: ProblemInput) -> np.ndarray:
+    """후보 지점이 있으면 각 기지국 좌표를 가장 가까운 후보 지점으로 이동."""
+    candidates = get_station_pool(problem)
+    if candidates is None or len(stations) == 0:
+        return stations
+    if len(candidates) == 0:
+        raise ValueError("기지국을 설치할 수 있는 위치가 없습니다.")
+    diff = stations[:, np.newaxis, :] - candidates[np.newaxis, :, :]
+    nearest = np.argmin(np.sum(diff ** 2, axis=2), axis=1)
+    return candidates[nearest].copy()
 
 
 def perturb(stations: np.ndarray, step_size: float) -> np.ndarray:

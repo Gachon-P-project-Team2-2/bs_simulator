@@ -15,6 +15,8 @@ from .base import (
     OptimizationResult,
     ProblemInput,
     compute_metrics,
+    compute_sinr,
+    sinr_coverage,
     convert_to_geo,
 )
 from .kmeans import KMeansOptimizer
@@ -59,5 +61,7 @@ __all__ = [
     "get_optimizer",
     "available_names",
     "compute_metrics",
+    "compute_sinr",
+    "sinr_coverage",
     "convert_to_geo",
 ]

@@ -4,7 +4,13 @@ import pandas as pd
 from typing import Iterable
 from scipy.stats import multivariate_normal
 from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Point, Polygon, box
-from shapely.vectorized import contains
+try:
+    from shapely import contains_xy as _contains_xy
+
+    def contains(geometry, x, y):
+        return _contains_xy(geometry, x, y)
+except Exception:  # pragma: no cover - compatibility fallback for older Shapely
+    from shapely.vectorized import contains  # type: ignore
 
 
 def _to_polygon_list(geometry: object) -> list[Polygon]:
@@ -52,13 +58,17 @@ class SyntheticEnvironment:
         self.width_km = width_km
         self.height_km = height_km
         
-        self.width_m = width_km * 1000
-        self.height_m = height_km * 1000
-        self.resolution_m = resolution_m
+        self.width_m = float(width_km) * 1000.0
+        self.height_m = float(height_km) * 1000.0
+        self.resolution_m = float(resolution_m)
+        if self.resolution_m <= 0:
+            raise ValueError("resolution_m must be positive")
+        if self.width_m <= 0 or self.height_m <= 0:
+            raise ValueError("width_km and height_km must be positive")
         
-        # 격자 개수 계산 (가로, 세로 다를 수 있음)
-        self.cols = int(self.width_m / resolution_m)  # x축 격자 수
-        self.rows = int(self.height_m / resolution_m) # y축 격자 수
+        # 격자 개수 계산 (가로, 세로 다를 수 있음). 너무 작은 영역에서도 최소 1칸은 보장한다.
+        self.cols = max(1, int(math.ceil(self.width_m / self.resolution_m)))  # x축 격자 수
+        self.rows = max(1, int(math.ceil(self.height_m / self.resolution_m))) # y축 격자 수
         
         self.x_range = np.linspace(0, self.width_m, self.cols)
         self.y_range = np.linspace(0, self.height_m, self.rows)
@@ -257,6 +267,12 @@ class SyntheticEnvironment:
             candidate = None
             for _ in range(max_attempts):
                 temp_obs = self._create_single_obstacle(current_pattern)
+                if temp_obs is None or temp_obs.is_empty:
+                    continue
+                if not temp_obs.is_valid:
+                    temp_obs = temp_obs.buffer(0)
+                if temp_obs is None or temp_obs.is_empty:
+                    continue
                 
                 # 겹치는지 확인하고
                 intersects = False
@@ -270,7 +286,7 @@ class SyntheticEnvironment:
                     break
             
             # 안겹치면 추가
-            if candidate:
+            if candidate is not None and not candidate.is_empty:
                 self.obstacles.append(candidate)
                 count += 1
             else:
@@ -429,6 +445,8 @@ class SyntheticEnvironment:
         if current is None:
             return
         self.traffic_map = np.array(current, copy=True)
+        if self.obstacles:
+            self.apply_masking()
 
     def apply_masking(self):
         # 장애물 지도에서 마스킹하기
@@ -456,16 +474,9 @@ class SyntheticEnvironment:
         return df[df['traffic'] > 0.1]
 
     def get_local_data(self):
-        # Local 좌표계 Array 반환 (좌하단 기준)
-        if self._raw_traffic_map is None:
-            traffic = self.traffic_map
-        else:
-            traffic = self._get_raw_active_map()
-            if traffic is None:
-                traffic = self.traffic_map
+        # Local 좌표계 Array 반환 (좌하단 기준). 장애물 마스킹이 반영된 traffic_map 기준.
+        traffic = self.traffic_map
         mask = np.asarray(traffic).ravel() > 0.1
-        if self.obstacles:
-            mask &= ~self.get_obstacle_mask().ravel()
         
         x_vals = self.x_grid.ravel()[mask]
         y_vals = self.y_grid.ravel()[mask]
@@ -477,15 +488,9 @@ class SyntheticEnvironment:
         # Local 좌표계 Array 반환 (좌상단 기준)
         # x: 그대로 (Left -> Right)
         # y: 반전 (Top -> Bottom, 즉 y=0이 최상단)
-        if self._raw_traffic_map is None:
-            traffic = self.traffic_map
-        else:
-            traffic = self._get_raw_active_map()
-            if traffic is None:
-                traffic = self.traffic_map
+        # 장애물 마스킹이 반영된 traffic_map 기준.
+        traffic = self.traffic_map
         mask = np.asarray(traffic).ravel() > 0.1
-        if self.obstacles:
-            mask &= ~self.get_obstacle_mask().ravel()
         
         x_vals = self.x_grid.ravel()[mask]
         y_vals_original = self.y_grid.ravel()[mask]
@@ -540,8 +545,41 @@ class SyntheticEnvironment:
         for poly in self.obstacles:
             if poly is None or poly.is_empty:
                 continue
-            in_poly = contains(poly, flat_x, flat_y)
+            in_poly = contains(poly.buffer(1e-6), flat_x, flat_y)
             mask = mask | in_poly
 
         self._obstacle_mask = mask.reshape(self.rows, self.cols)
         return self._obstacle_mask
+
+    def get_station_feasible_points(self):
+        """기지국 설치가 가능한 local 좌표 목록을 반환한다."""
+        if not self.obstacles:
+            return None
+        feasible_mask = ~self.get_obstacle_mask().ravel()
+        if not np.any(feasible_mask):
+            return np.empty((0, 2))
+        return np.column_stack((
+            self.x_grid.ravel()[feasible_mask],
+            self.y_grid.ravel()[feasible_mask],
+        ))
+
+    def filter_station_candidate_points(self, points):
+        """장애물 내부 후보 지점을 제거한다."""
+        if points is None:
+            return None
+        arr = np.asarray(points, dtype=float)
+        if arr.size == 0:
+            return np.empty((0, 2))
+        if arr.ndim == 1 and arr.shape == (2,):
+            arr = arr.reshape(1, 2)
+        if arr.ndim != 2 or arr.shape[1] != 2:
+            return np.empty((0, 2))
+        if not self.obstacles:
+            return arr.copy()
+
+        in_obstacle = np.zeros(len(arr), dtype=bool)
+        for poly in self.obstacles:
+            if poly is None or poly.is_empty:
+                continue
+            in_obstacle |= contains(poly.buffer(1e-6), arr[:, 0], arr[:, 1])
+        return arr[~in_obstacle].copy()
