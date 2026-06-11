@@ -1641,6 +1641,14 @@ def serve_layout():
                             html.H1("기지국 위치 최적화 시뮬레이터", style={"marginTop": 0}),
 
                             html.Div(
+                                [
+                                    metric_card("총 트래픽", "-"),
+                                    metric_card("커버된 트래픽", "-"),
+                                    metric_card("커버된 면적", "-"),
+                                    metric_card("평균 SINR", "-"),
+                                    metric_card("총 처리량", "-"),
+                                    metric_card("기지국 수", "-"),
+                                ],
                                 id="stats-panel",
                                 style={"display": "flex", "gap": "10px", "flexWrap": "wrap"},
                             ),
@@ -3200,7 +3208,14 @@ def render_stats_panel(opt_meta, session_id):
     stats = state.get("opt_stats")
 
     if not stats:
-        return []
+        return [
+            metric_card("총 트래픽", "-"),
+            metric_card("커버된 트래픽", "-"),
+            metric_card("커버된 면적", "-"),
+            metric_card("평균 SINR", "-"),
+            metric_card("총 처리량", "-"),
+            metric_card("기지국 수", "-"),
+        ]
 
     total_t = float(stats.get("total_traffic", 0))
     cov_t = float(stats.get("covered_traffic", 0))
