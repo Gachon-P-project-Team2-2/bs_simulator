@@ -691,25 +691,22 @@ def build_traffic_geojson(
         is_obstacle = bool(is_obstacles[idx])
 
         norm = traffic / max_traffic  # 0~1 범위
-        color = "#ff0000"
-        opacity = min(norm * 0.8, 0.8)
         status_text = "N/A"
 
-        if map_layer_mode == "커버리지 상태 (Status)" and len(status_list) > idx:
+        if is_obstacle:
+            # 장애물: 회색조 (밝기 40~70%, 불투명도 고정)
+            gray = int(100 + norm * 70)
+            color = f"rgb({gray},{gray},{gray})"
+            opacity = 0.75
+            status_text = "Obstacle"
+        elif map_layer_mode == "커버리지 상태 (Status)" and len(status_list) > idx:
             status = int(status_list[idx])
-
-            if status == 1:
-                color = "#0000ff"
-            elif status == 2:
-                color = "#ffa500"
-            else:
-                color = "#ff0000"
-
+            color = {1: "#0000ff", 2: "#ffa500"}.get(status, "#ff0000")
             opacity = min(norm * 0.7 + 0.2, 0.9)
             status_text = {0: "Uncovered", 1: "Covered", 2: "Overloaded"}.get(status, "N/A")
-
-            if is_obstacle:
-                status_text = f"{status_text} (Obstacle)"
+        else:
+            color = "#ff0000"
+            opacity = min(norm * 0.8, 0.8)
 
         min_lat, max_lat = lat - lat_step / 2, lat + lat_step / 2
         min_lon, max_lon = lon - lon_step / 2, lon + lon_step / 2
