@@ -44,12 +44,8 @@ def _slider_to_min(page: Page, label: str) -> None:
 
 
 def _ensure_expander_open(page: Page, label: str) -> None:
-    """html.Details 요소를 '열림' 상태로 보장 (이미 열려있으면 no-op)."""
-    summary = page.locator("summary").filter(has_text=label).first
-    parent = summary.locator("..")
-    is_open = parent.evaluate("el => el.open")
-    if not is_open:
-        summary.click()
+    """아코디언 제거 이후 항상 열려 있으므로 no-op."""
+    pass
 
 
 def _minimize_hyperparams(page: Page, algo: str) -> None:

@@ -1060,11 +1060,14 @@ def metric_card(title: str, value: str):
     )
 
 
-def _disclosure(title: str, children: list, open: bool = False):
-    return html.Details(
-        [html.Summary(html.H3(title, style={"display": "inline", "margin": 0})), *children],
-        open=open,
-        style={"marginBottom": "12px"},
+def _section(title: str, children: list):
+    return html.Div(
+        [
+            html.H3(title, style={"margin": "0 0 8px", "fontSize": "14px", "fontWeight": "700",
+                                  "borderBottom": "1px solid #e5e7eb", "paddingBottom": "4px"}),
+            *children,
+        ],
+        style={"marginBottom": "16px"},
     )
 
 
@@ -1080,7 +1083,7 @@ def sidebar_layout():
               [
                 html.H2("시뮬레이터 제어", style={"marginTop": 0}),
 
-            _disclosure(
+            _section(
                 "1. 환경 설정",
                 [
                     html.Label("격자 크기 (m)"),
@@ -1094,9 +1097,10 @@ def sidebar_layout():
                         style={"width": "100%"},
                     ),
 
-                    html.Details(
+                    html.Div(
                         [
-                            html.Summary("트래픽 세부 설정"),
+                            html.H4("트래픽 세부 설정", style={"margin": "8px 0 6px", "fontSize": "13px",
+                                                             "fontWeight": "600", "color": "#374151"}),
 
                             html.Label("트래픽 패턴"),
                             dcc.Dropdown(
@@ -1192,12 +1196,12 @@ def sidebar_layout():
                                 id="dynamic-traffic-controls",
                             ),
                         ],
-                        open=True,
                     ),
 
-                    html.Details(
+                    html.Div(
                         [
-                            html.Summary("오브젝트 세부 설정"),
+                            html.H4("오브젝트 세부 설정", style={"margin": "8px 0 6px", "fontSize": "13px",
+                                                               "fontWeight": "600", "color": "#374151"}),
 
                             html.Label("오브젝트 사용 방식"),
                             dcc.RadioItems(
@@ -1296,7 +1300,6 @@ def sidebar_layout():
                                 id="geojson-obstacle-controls",
                             ),
                         ],
-                        open=True,
                     ),
 
                     html.Div(
@@ -1331,9 +1334,10 @@ def sidebar_layout():
                         },
                     ),
 
-                    html.Details(
+                    html.Div(
                         [
-                            html.Summary("시간대 설정"),
+                            html.H4("시간대 설정", style={"margin": "8px 0 6px", "fontSize": "13px",
+                                                         "fontWeight": "600", "color": "#374151"}),
                             html.Label("시간 프로파일", style={"marginTop": "8px"}),
                             dcc.Dropdown(
                                 id="time-profile-select",
@@ -1357,7 +1361,6 @@ def sidebar_layout():
                                 tooltip={"placement": "bottom"},
                             ),
                         ],
-                        open=False,
                         style={"marginTop": "8px"},
                     ),
 
@@ -1369,10 +1372,9 @@ def sidebar_layout():
                     ),
                     html.Div(id="create-status", style={"fontSize": "13px", "marginTop": "8px"}),
                 ],
-                open=True,
             ),
 
-            _disclosure(
+            _section(
                 "2. 시각화 설정",
                 [
                     dcc.RadioItems(
@@ -1384,7 +1386,6 @@ def sidebar_layout():
                         value="커버리지 상태 (Status)",
                     ),
                 ],
-                open=True,
             ),
 
               ],
@@ -1414,7 +1415,7 @@ def algo_sidebar_layout():
     available_algos = [cls.name for cls in REGISTRY]
     default_algo = available_algos[0] if available_algos else ""
     return html.Div([
-        _disclosure(
+        _section(
             "계산 알고리즘",
             [
                 html.Label("알고리즘 선택"),
@@ -1435,10 +1436,9 @@ def algo_sidebar_layout():
                     tooltip={"placement": "bottom"},
                 ),
             ],
-            open=True,
         ),
 
-        _disclosure(
+        _section(
             "기지국 스펙",
             [
                 html.Label("송신 전력 (dBm)"),
@@ -1520,10 +1520,9 @@ def algo_sidebar_layout():
                     style={"marginTop": "8px", "display": "none"},
                 ),
             ],
-            open=True,
         ),
 
-        _disclosure(
+        _section(
             "전파 모델",
             [
                 html.Label("경로 손실 지수 n"),
@@ -1587,10 +1586,9 @@ def algo_sidebar_layout():
                     className="primary-button",
                 ),
             ],
-            open=True,
         ),
 
-        _disclosure(
+        _section(
             "데이터 내보내기",
             [
                 html.Button("GIS CSV", id="download-gis-btn", n_clicks=0),
@@ -1601,7 +1599,6 @@ def algo_sidebar_layout():
                     style={"marginLeft": "6px"},
                 ),
             ],
-            open=True,
         ),
     ])
 
@@ -1814,12 +1811,12 @@ def serve_layout():
                                                 label="Sweep",
                                                 value="tab-sweep",
                                                 children=[
-                                                    html.Details(
+                                                    html.Div(
                                                         [
-                                                            html.Summary(
-                                                                html.H3("Sweep 설정",
-                                                                        style={"display": "inline", "margin": 0})
-                                                            ),
+                                                            html.H3("Sweep 설정", style={"margin": "0 0 8px",
+                                                                    "fontSize": "14px", "fontWeight": "700",
+                                                                    "borderBottom": "1px solid #e5e7eb",
+                                                                    "paddingBottom": "4px"}),
                                                             html.Div(
                                                                 id="sweep-algo-display",
                                                                 style={"fontSize": "12px", "color": "#6b7280",
@@ -1835,16 +1832,15 @@ def serve_layout():
                                                             html.Div(id="sweep-status",
                                                                      style={"fontSize": "12px", "marginTop": "8px"}),
                                                         ],
-                                                        open=True,
-                                                        style={"marginBottom": "12px"},
+                                                        style={"marginBottom": "16px"},
                                                     ),
 
-                                                    html.Details(
+                                                    html.Div(
                                                         [
-                                                            html.Summary(
-                                                                html.H3("Sweep 결과",
-                                                                        style={"display": "inline", "margin": 0})
-                                                            ),
+                                                            html.H3("Sweep 결과", style={"margin": "0 0 8px",
+                                                                    "fontSize": "14px", "fontWeight": "700",
+                                                                    "borderBottom": "1px solid #e5e7eb",
+                                                                    "paddingBottom": "4px"}),
                                                             html.Div(
                                                                 [
                                                                     dcc.Graph(
@@ -1879,17 +1875,16 @@ def serve_layout():
                                                                 ]
                                                             ),
                                                         ],
-                                                        open=True,
-                                                        style={"marginBottom": "12px"},
+                                                        style={"marginBottom": "16px"},
                                                     ),
 
                                                     # ── 알고리즘 비교 ──────────────────────
-                                                    html.Details(
+                                                    html.Div(
                                                         [
-                                                            html.Summary(
-                                                                html.H3("알고리즘 비교",
-                                                                        style={"display": "inline", "margin": 0})
-                                                            ),
+                                                            html.H3("알고리즘 비교", style={"margin": "0 0 8px",
+                                                                    "fontSize": "14px", "fontWeight": "700",
+                                                                    "borderBottom": "1px solid #e5e7eb",
+                                                                    "paddingBottom": "4px"}),
                                                             html.Div([
                                                                 html.Label("비교할 알고리즘",
                                                                            style={"fontSize": "12px",
@@ -1919,8 +1914,7 @@ def serve_layout():
                                                                 html.Div(id="algo-compare-results"),
                                                             ]),
                                                         ],
-                                                        open=False,
-                                                        style={"marginBottom": "12px"},
+                                                        style={"marginBottom": "16px"},
                                                     ),
                                                 ],
                                                 style={"padding": "10px 4px 0"},
