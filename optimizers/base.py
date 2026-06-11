@@ -24,6 +24,15 @@ _MCS_SPECTRAL = np.array([0.0, 0.15, 0.23, 0.38, 0.60, 0.88, 1.18,
 _MCS_MAX_EFF  = 4.80  # 256QAM 최고 효율 (SINR ≥ 26 dB)
 
 
+def capacity_from_bandwidth(bandwidth_mhz: float, overhead_ratio: float = 0.15) -> float:
+    """대역폭과 오버헤드로부터 기지국 피크 처리 용량 [Mbps] 유도.
+
+    C = bandwidth_mhz × η_max × (1 - overhead_ratio)
+    η_max = 4.80 bits/s/Hz (256QAM 이론 최대)
+    """
+    return float(bandwidth_mhz) * _MCS_MAX_EFF * (1.0 - float(overhead_ratio))
+
+
 def spectral_efficiency(sinr_db: np.ndarray, mode: str = "shannon") -> np.ndarray:
     """SINR(dB) → 스펙트럼 효율 [bits/s/Hz].
 
@@ -90,6 +99,9 @@ class ProblemInput:
     score_mode: str = "traffic"               # "traffic" | "throughput"
     spectral_efficiency_mode: str = "shannon" # "shannon" | "mcs"
 
+    # ---- 트래픽 단위 변환 ----
+    weight_scale: float = 1.0                 # weights → Mbps 스케일 팩터
+
     @classmethod
     def from_env(
         cls,
@@ -106,6 +118,7 @@ class ProblemInput:
         bandwidth_mhz: float = 10.0,
         score_mode: str = "traffic",
         spectral_efficiency_mode: str = "shannon",
+        weight_scale: float = 1.0,
     ) -> "ProblemInput":
         """SyntheticEnvironment 인스턴스에서 ProblemInput 구축."""
         data = env.get_local_data()
@@ -119,9 +132,10 @@ class ProblemInput:
         if candidate_array is not None and hasattr(env, "filter_station_candidate_points"):
             candidate_array = env.filter_station_candidate_points(candidate_array)
         feasible_array = _build_feasible_station_points(env, candidate_array, has_candidate_constraint)
+        weights = data[:, 2] * float(weight_scale) if weight_scale != 1.0 else data[:, 2]
         return cls(
             X=data[:, 0:2],
-            weights=data[:, 2],
+            weights=weights,
             width_m=env.width_m,
             height_m=env.height_m,
             radius_m=radius_m,
@@ -138,6 +152,7 @@ class ProblemInput:
             bandwidth_mhz=bandwidth_mhz,
             score_mode=score_mode,
             spectral_efficiency_mode=spectral_efficiency_mode,
+            weight_scale=weight_scale,
         )
 
 

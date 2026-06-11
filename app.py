@@ -50,6 +50,7 @@ from obstacle_sources import (
 from optimizers import (
     REGISTRY,
     ProblemInput,
+    capacity_from_bandwidth,
     convert_to_geo,
     get_optimizer,
     sinr_coverage,
@@ -1422,15 +1423,40 @@ def algo_sidebar_layout():
                     inline=True,
                 ),
 
-                html.Label("기본 용량 (Traffic)"),
+                html.Label("오버헤드 비율 (%)"),
+                dcc.Slider(
+                    id="overhead-ratio",
+                    min=0,
+                    max=50,
+                    step=1,
+                    value=15,
+                    tooltip={"placement": "bottom"},
+                    marks={0: "0%", 15: "15%", 30: "30%", 50: "50%"},
+                ),
+
+                html.Label("트래픽 단위당 수요 (Mbps/unit)"),
+                dcc.Input(
+                    id="traffic-mbps-per-unit",
+                    type="number",
+                    min=0.001,
+                    max=100.0,
+                    step=0.001,
+                    value=0.05,
+                    style={"width": "100%"},
+                ),
+
+                html.Div(
+                    id="capacity-display",
+                    style={"fontSize": "12px", "color": "#2563eb",
+                           "marginTop": "4px", "fontWeight": "600"},
+                ),
+
+                # 자동 계산값을 콜백으로 채우는 숨김 입력
                 dcc.Input(
                     id="capacity-default",
                     type="number",
-                    min=500,
-                    max=1_000_000_000,
-                    step=100,
-                    value=10000,
-                    style={"width": "100%"},
+                    value=40.8,
+                    style={"display": "none"},
                 ),
 
                 html.Div(
@@ -2276,6 +2302,19 @@ def toggle_spectral_eff_panel(score_mode):
 
 
 @app.callback(
+    Output("capacity-default", "value"),
+    Output("capacity-display", "children"),
+    Input("ui-bandwidth-mhz", "value"),
+    Input("overhead-ratio", "value"),
+)
+def auto_compute_capacity(bandwidth_mhz, overhead_ratio):
+    bw = safe_float(bandwidth_mhz, 10.0)
+    oh = safe_float(overhead_ratio, 15.0) / 100.0
+    cap = capacity_from_bandwidth(bw, oh)
+    return cap, f"자동 계산: {cap:.1f} Mbps / 기지국"
+
+
+@app.callback(
     Output("station-spec-table", "data"),
     Output("spec-table-wrap", "style"),
     Input("spec-mode", "value"),
@@ -2856,6 +2895,7 @@ def _run_optimization_thread(
     spectral_efficiency_mode: str = "shannon",
     time_profile: str = "flat",
     time_hour: int = 12,
+    weight_scale: float = 1.0,
 ) -> None:
     """백그라운드 스레드: 최적화 실행 후 세션 상태에 결과 저장."""
     try:
@@ -2903,6 +2943,7 @@ def _run_optimization_thread(
                 bandwidth_mhz=prop["bandwidth_mhz"],
                 score_mode=score_mode,
                 spectral_efficiency_mode=spectral_efficiency_mode,
+                weight_scale=weight_scale,
             )
 
             def _progress_cb(it, total, best_stations_local, best_score,
@@ -3051,6 +3092,7 @@ def _make_progress_html(algo: str, k_cur: int, k_tot: int,
     State("spectral-eff-mode", "value"),
     State("time-profile-select", "value"),
     State("time-hour-slider", "value"),
+    State("traffic-mbps-per-unit", "value"),
     prevent_initial_call=True,
 )
 def start_optimization_job(
@@ -3061,6 +3103,7 @@ def start_optimization_job(
     ui_tx_power, ui_path_loss_exp, ui_bandwidth_mhz, ui_sinr_threshold,
     ui_hetnet, ui_n_macro, ui_n_small, ui_macro_power, ui_small_power,
     score_mode, spectral_eff_mode, time_profile, time_hour,
+    traffic_mbps_per_unit,
 ):
     if not n_clicks:
         raise PreventUpdate
@@ -3102,7 +3145,8 @@ def start_optimization_job(
               score_mode or "traffic",
               spectral_eff_mode or "shannon",
               time_profile or "flat",
-              int(time_hour or 12)),
+              int(time_hour or 12),
+              safe_float(traffic_mbps_per_unit, 0.05)),
         daemon=True,
     ).start()
 
@@ -3196,9 +3240,12 @@ def render_stats_panel(opt_meta, session_id):
 
     total_tp = float(stats.get("total_throughput_mbps", 0.0))
 
+    # 트래픽이 Mbps 단위면 소수, 추상 단위면 정수로 표시
+    t_fmt = (lambda v: f"{v:.2f} Mbps") if total_t < 1e4 else (lambda v: f"{int(v)}")
+
     return [
-        metric_card("총 트래픽", f"{int(total_t)}"),
-        metric_card("커버된 트래픽", f"{int(cov_t)} ({traffic_cov_pct:.1f}%)"),
+        metric_card("총 트래픽", t_fmt(total_t)),
+        metric_card("커버된 트래픽", f"{t_fmt(cov_t)} ({traffic_cov_pct:.1f}%)"),
         metric_card("커버된 면적", f"{int(cov_a)} 격자 ({area_cov_pct:.1f}%)"),
         metric_card("평균 SINR", f"{mean_sinr:.1f} dB" if mean_sinr is not None else "-"),
         metric_card("총 처리량", f"{total_tp:.1f} Mbps"),
@@ -3890,6 +3937,7 @@ def render_sweep_params_ui(algo):
     State("spectral-eff-mode", "value"),
     State("time-profile-select", "value"),
     State("time-hour-slider", "value"),
+    State("traffic-mbps-per-unit", "value"),
     prevent_initial_call=True,
 )
 def start_sweep_job(
@@ -3901,6 +3949,7 @@ def start_sweep_job(
     ui_hetnet, ui_n_macro, ui_n_small, ui_macro_power, ui_small_power,
     spec_mode, capacity_default, station_specs,
     score_mode, spectral_eff_mode, time_profile, time_hour,
+    traffic_mbps_per_unit,
 ):
     if not n_clicks:
         raise PreventUpdate
@@ -3979,6 +4028,7 @@ def start_sweep_job(
         "spectral_efficiency_mode": spectral_eff_mode or "shannon",
         "time_profile": time_profile or "flat",
         "time_hour": int(time_hour or 12),
+        "weight_scale": safe_float(traffic_mbps_per_unit, 0.05),
     }
     state["sweep_progress"] = {
         "running": True, "done": False, "error": None,
@@ -4012,6 +4062,7 @@ def _run_sweep_thread(session_id: str) -> None:
         prop = cfg["prop"]
         score_mode = cfg.get("score_mode", "traffic")
         spectral_efficiency_mode = cfg.get("spectral_efficiency_mode", "shannon")
+        weight_scale = float(cfg.get("weight_scale", 1.0))
 
         # 시간대 설정 적용
         env.time_profile = cfg.get("time_profile", "flat")
@@ -4046,6 +4097,7 @@ def _run_sweep_thread(session_id: str) -> None:
                 sinr_threshold_db=prop["sinr_threshold_db"],
                 score_mode=score_mode,
                 spectral_efficiency_mode=spectral_efficiency_mode,
+                weight_scale=weight_scale,
             )
             return prob, cap, tx
 
