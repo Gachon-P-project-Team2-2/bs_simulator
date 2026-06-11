@@ -342,31 +342,15 @@ def set_station_spec_rows_from_arrays(
 
 def tx_power_for_k(
     k: int,
-    hetnet_enabled: bool,
     ui_tx_power: float,
-    n_macro: int,
-    n_small: int,
-    macro_power: float,
-    small_power: float,
     spec_mode: str,
     spec_rows: list[dict[str, Any]] | None,
 ) -> np.ndarray:
     if k <= 0:
         return np.zeros(0, dtype=float)
 
-    if hetnet_enabled:
-        base = np.concatenate(
-            [
-                np.full(max(0, int(n_macro)), float(macro_power), dtype=float),
-                np.full(max(0, int(n_small)), float(small_power), dtype=float),
-            ]
-        )
-        if len(base) == 0:
-            base = np.asarray([float(ui_tx_power)], dtype=float)
-
-    elif spec_mode == "기지국별 개별" and spec_rows:
+    if spec_mode == "기지국별 개별" and spec_rows:
         base = coerce_station_tx_power_array(spec_rows, k, float(ui_tx_power))
-
     else:
         base = np.asarray([float(ui_tx_power)], dtype=float)
 
@@ -1596,64 +1580,6 @@ def algo_sidebar_layout():
                     style={"display": "none", "marginTop": "8px"},
                 ),
 
-                dcc.Checklist(
-                    id="ui-hetnet",
-                    options=[{"label": "HetNet 활성화 — 매크로 + 스몰셀 혼합 배치", "value": "on"}],
-                    value=[],
-                    style={"marginTop": "8px"},
-                ),
-
-                html.Div(
-                    [
-                        html.Div(
-                            [
-                                html.Label("매크로 기지국 수"),
-                                dcc.Input(
-                                    id="ui-n-macro",
-                                    type="number",
-                                    min=0,
-                                    max=20,
-                                    step=1,
-                                    value=2,
-                                    style={"width": "48%", "marginRight": "4%"},
-                                ),
-
-                                html.Label("스몰셀 수"),
-                                dcc.Input(
-                                    id="ui-n-small",
-                                    type="number",
-                                    min=0,
-                                    max=50,
-                                    step=1,
-                                    value=3,
-                                    style={"width": "48%"},
-                                ),
-                            ]
-                        ),
-
-                        html.Label("매크로 전력 (dBm)"),
-                        dcc.Slider(
-                            id="ui-macro-power",
-                            min=30,
-                            max=50,
-                            step=1,
-                            value=43,
-                            tooltip={"placement": "bottom"},
-                        ),
-
-                        html.Label("스몰셀 전력 (dBm)"),
-                        dcc.Slider(
-                            id="ui-small-power",
-                            min=20,
-                            max=40,
-                            step=1,
-                            value=30,
-                            tooltip={"placement": "bottom"},
-                        ),
-                    ],
-                    id="hetnet-controls",
-                ),
-
                 html.Button(
                     "계산 실행",
                     id="optimize-btn",
@@ -2362,14 +2288,6 @@ def update_noise_caption(tx_power, path_loss_exp, bandwidth_mhz, sinr_threshold)
 
 
 @app.callback(
-    Output("hetnet-controls", "style"),
-    Input("ui-hetnet", "value"),
-)
-def toggle_hetnet_controls(hetnet_value):
-    return {"display": "block" if normalize_triggered_bool(hetnet_value) else "none"}
-
-
-@app.callback(
     Output("spectral-eff-wrap", "style"),
     Input("score-mode", "value"),
 )
@@ -2412,10 +2330,7 @@ def update_area_demand_display(area_demand, resolution_m):
     Input("capacity-default", "value"),
     Input("ui-tx-power", "value"),
     Input("ui-bandwidth-mhz", "value"),
-    Input("ui-hetnet", "value"),
     Input("n-stations", "value"),
-    Input("ui-n-macro", "value"),
-    Input("ui-n-small", "value"),
     State("station-spec-table", "data"),
 )
 def refresh_station_spec_table(
@@ -2423,19 +2338,10 @@ def refresh_station_spec_table(
     capacity_default,
     ui_tx_power,
     ui_bandwidth_mhz,
-    hetnet_value,
     n_stations,
-    ui_n_macro,
-    ui_n_small,
     existing_rows,
 ):
-    hetnet_enabled = normalize_triggered_bool(hetnet_value)
-
-    if hetnet_enabled:
-        target_count = safe_int(ui_n_macro, 0) + safe_int(ui_n_small, 0)
-        target_count = max(target_count, 1)
-    else:
-        target_count = safe_int(n_stations, 5)
+    target_count = safe_int(n_stations, 5)
 
     default_tx = safe_float(ui_tx_power, 43.0)
     default_bw = safe_float(ui_bandwidth_mhz, 10.0)
@@ -2967,10 +2873,7 @@ def _parse_hyperparams(hp_values, hp_ids, hp_defaults: dict) -> dict[str, Any]:
     return hyperparams
 
 
-def _build_k_list(hetnet_enabled: bool, n_stations, ui_n_macro, ui_n_small) -> list[int]:
-    if hetnet_enabled:
-        k = max(safe_int(ui_n_macro, 0) + safe_int(ui_n_small, 0), 1)
-        return [k]
+def _build_k_list(n_stations) -> list[int]:
     return [safe_int(n_stations, 5)]
 
 
@@ -2983,7 +2886,7 @@ def _run_optimization_thread(
     spec_mode: str,
     capacity_default,
     station_specs,
-    ui_tx_power, ui_hetnet, ui_n_macro, ui_n_small, ui_macro_power, ui_small_power,
+    ui_tx_power,
     score_mode: str = "traffic",
     spectral_efficiency_mode: str = "shannon",
     time_profile: str = "flat",
@@ -3005,7 +2908,6 @@ def _run_optimization_thread(
 
         start_time = time.time()
         optimizer = get_optimizer(algo)
-        hetnet_enabled = normalize_triggered_bool(ui_hetnet)
         range_results = []
 
         for k_idx, k in enumerate(k_list):
@@ -3013,14 +2915,9 @@ def _run_optimization_thread(
                                    safe_float(capacity_default, 2000.0))
             tx_k = tx_power_for_k(
                 k,
-                hetnet_enabled=hetnet_enabled,
-                ui_tx_power=safe_float(ui_tx_power, 43.0),
-                n_macro=safe_int(ui_n_macro, 0),
-                n_small=safe_int(ui_n_small, 0),
-                macro_power=safe_float(ui_macro_power, 43.0),
-                small_power=safe_float(ui_small_power, 30.0),
-                spec_mode=spec_mode,
-                spec_rows=station_specs,
+                safe_float(ui_tx_power, 43.0),
+                spec_mode,
+                station_specs,
             )
             radius_k = radius_from_tx(tx_k, prop)
             problem = ProblemInput.from_env(
@@ -3176,11 +3073,6 @@ def _make_progress_html(algo: str, k_cur: int, k_tot: int,
     State("ui-path-loss-exp", "value"),
     State("ui-bandwidth-mhz", "value"),
     State("ui-sinr-threshold", "value"),
-    State("ui-hetnet", "value"),
-    State("ui-n-macro", "value"),
-    State("ui-n-small", "value"),
-    State("ui-macro-power", "value"),
-    State("ui-small-power", "value"),
     State("score-mode", "value"),
     State("spectral-eff-mode", "value"),
     State("time-profile-select", "value"),
@@ -3193,7 +3085,6 @@ def start_optimization_job(
     n_stations,
     spec_mode, capacity_default, station_specs,
     ui_tx_power, ui_path_loss_exp, ui_bandwidth_mhz, ui_sinr_threshold,
-    ui_hetnet, ui_n_macro, ui_n_small, ui_macro_power, ui_small_power,
     score_mode, spectral_eff_mode, time_profile, time_hour,
 ):
     if not n_clicks:
@@ -3210,8 +3101,7 @@ def start_optimization_job(
     optimizer = get_optimizer(algo)
     hp_defaults = {p.name: p.default for p in optimizer.hyperparams}
     hyperparams = _parse_hyperparams(hp_values, hp_ids, hp_defaults)
-    hetnet_enabled = normalize_triggered_bool(ui_hetnet)
-    k_list = _build_k_list(hetnet_enabled, n_stations, ui_n_macro, ui_n_small)
+    k_list = _build_k_list(n_stations)
     prop = prop_params_base(
         path_loss_exponent=safe_float(ui_path_loss_exp, 3.5),
         bandwidth_mhz=safe_float(ui_bandwidth_mhz, 10.0),
@@ -3231,8 +3121,7 @@ def start_optimization_job(
         target=_run_optimization_thread,
         args=(session_id, algo, hyperparams, k_list, prop,
               spec_mode, capacity_default, station_specs,
-              ui_tx_power, ui_hetnet, ui_n_macro, ui_n_small,
-              ui_macro_power, ui_small_power,
+              ui_tx_power,
               score_mode or "traffic",
               spectral_eff_mode or "shannon",
               time_profile or "flat",
@@ -3342,129 +3231,6 @@ def render_stats_panel(opt_meta, session_id):
         metric_card("총 처리량", f"{total_tp:.1f} Mbps"),
         metric_card("기지국 수", f"{stats.get('n_stations', '-')}"),
     ]
-
-
-# @app.callback(
-#     Output("range-panel", "children"),
-#     Input("range-meta", "data"),
-#     State("session-id", "data"),
-# )
-# def render_range_panel(range_meta, session_id):
-#     state = get_session_state(session_id)
-#     results = state.get("range_results")
-
-#     if not results:
-#         return []
-
-#     df_res = pd.DataFrame(
-#         [
-#             {
-#                 "k": r["k"],
-#                 "score": r["score"],
-#                 "covered_traffic": r["covered_traffic"],
-#                 "covered_area": r["covered_area"],
-#             }
-#             for r in results
-#         ]
-#     )
-
-#     fig = go.Figure()
-
-#     fig.add_trace(
-#         go.Scatter(
-#             x=df_res["k"],
-#             y=df_res["covered_traffic"],
-#             mode="lines+markers",
-#             name="Covered Traffic",
-#         )
-#     )
-
-#     fig.add_trace(
-#         go.Scatter(
-#             x=df_res["k"],
-#             y=df_res["score"],
-#             mode="lines+markers",
-#             name="Score",
-#             yaxis="y2",
-#         )
-#     )
-
-#     fig.update_layout(
-#         title="범위 탐색 결과",
-#         xaxis_title="Number of Stations",
-#         yaxis=dict(title="Covered Traffic"),
-#         yaxis2=dict(title="Score", overlaying="y", side="right"),
-#         legend=dict(orientation="h"),
-#         margin=dict(l=40, r=40, t=50, b=40),
-#     )
-
-#     return html.Div(
-#         [
-#             html.Div(
-#                 "범위 탐색 결과",
-#                 style={
-#                     "fontWeight": "700",
-#                     "fontSize": "13px",
-#                     "marginBottom": "6px",
-#                     "color": "#111827",
-#                 },
-#             ),
-
-#             dcc.Graph(
-#                 figure=fig,
-#                 style={"height": "180px", "marginBottom": "6px"},
-#                 config={"displayModeBar": False},
-#             ),
-
-#             html.Div(
-#                 [
-#                     dcc.Dropdown(
-#                         id="range-k-dropdown",
-#                         options=[
-#                             {"label": f"k={int(k)}", "value": int(k)}
-#                             for k in df_res["k"]
-#                         ],
-#                         value=int(df_res.loc[df_res["score"].idxmax(), "k"]),
-#                         clearable=False,
-#                         style={"width": "110px", "display": "inline-block", "marginRight": "6px"},
-#                     ),
-#                     html.Button(
-#                         "적용",
-#                         id="apply-k-btn",
-#                         n_clicks=0,
-#                         style={
-#                             "padding": "4px 10px",
-#                             "fontSize": "12px",
-#                             "background": "#2563eb",
-#                             "color": "#fff",
-#                             "border": "0",
-#                             "borderRadius": "4px",
-#                             "cursor": "pointer",
-#                         },
-#                     ),
-#                 ],
-#                 style={"display": "flex", "alignItems": "center", "marginBottom": "6px"},
-#             ),
-
-#             dash_table.DataTable(
-#                 data=df_res.round(3).to_dict("records"),
-#                 columns=[{"name": c, "id": c} for c in df_res.columns],
-#                 page_size=10,
-#                 style_table={"overflowX": "auto", "maxHeight": "160px", "overflowY": "auto"},
-#                 style_cell={"fontSize": "11px", "padding": "4px 6px"},
-#                 style_header={"fontSize": "11px", "fontWeight": "700"},
-#             ),
-#         ],
-#         style={
-#             "background": "rgba(255,255,255,0.96)",
-#             "border": "1px solid #e5e7eb",
-#             "borderRadius": "8px",
-#             "padding": "10px 12px",
-#             "minWidth": "280px",
-#             "maxWidth": "340px",
-#             "boxShadow": "0 2px 8px rgba(0,0,0,0.15)",
-#         },
-#     )
 
 
 @app.callback(
@@ -4016,11 +3782,6 @@ def render_sweep_params_ui(algo):
     State("ui-path-loss-exp", "value"),
     State("ui-bandwidth-mhz", "value"),
     State("ui-sinr-threshold", "value"),
-    State("ui-hetnet", "value"),
-    State("ui-n-macro", "value"),
-    State("ui-n-small", "value"),
-    State("ui-macro-power", "value"),
-    State("ui-small-power", "value"),
     State("spec-mode", "value"),
     State("capacity-default", "value"),
     State("station-spec-table", "data"),
@@ -4036,7 +3797,6 @@ def start_sweep_job(
     n_stations,
     enabled_values, enabled_ids, min_values, max_values, steps_values,
     ui_tx_power, ui_path_loss_exp, ui_bandwidth_mhz, ui_sinr_threshold,
-    ui_hetnet, ui_n_macro, ui_n_small, ui_macro_power, ui_small_power,
     spec_mode, capacity_default, station_specs,
     score_mode, spectral_eff_mode, time_profile, time_hour,
 ):
@@ -4108,11 +3868,6 @@ def start_sweep_job(
         "capacity_default": capacity_default,
         "station_specs": station_specs,
         "ui_tx_power": ui_tx_power,
-        "ui_hetnet": ui_hetnet,
-        "ui_n_macro": ui_n_macro,
-        "ui_n_small": ui_n_small,
-        "ui_macro_power": ui_macro_power,
-        "ui_small_power": ui_small_power,
         "score_mode": score_mode or "traffic",
         "spectral_efficiency_mode": spectral_eff_mode or "shannon",
         "time_profile": time_profile or "flat",
@@ -4158,7 +3913,6 @@ def _run_sweep_thread(session_id: str) -> None:
         env.time_hour = max(0, min(23, int(cfg.get("time_hour", 12))))
 
         optimizer = get_optimizer(algo)
-        hetnet_enabled = normalize_triggered_bool(cfg["ui_hetnet"])
         k_is_swept = any(p["name"] == "__k__" for p in sweep_params)
 
         def _build_problem(k_val):
@@ -4166,14 +3920,9 @@ def _run_sweep_thread(session_id: str) -> None:
                                  safe_float(cfg["capacity_default"], 2000.0))
             tx = tx_power_for_k(
                 k_val,
-                hetnet_enabled=hetnet_enabled,
-                ui_tx_power=safe_float(cfg["ui_tx_power"], 43.0),
-                n_macro=safe_int(cfg["ui_n_macro"], 0),
-                n_small=safe_int(cfg["ui_n_small"], 0),
-                macro_power=safe_float(cfg["ui_macro_power"], 43.0),
-                small_power=safe_float(cfg["ui_small_power"], 30.0),
-                spec_mode=cfg["spec_mode"],
-                spec_rows=cfg["station_specs"],
+                safe_float(cfg["ui_tx_power"], 43.0),
+                cfg["spec_mode"],
+                cfg["station_specs"],
             )
             r = radius_from_tx(tx, prop)
             prob = ProblemInput.from_env(
@@ -4454,11 +4203,6 @@ def apply_sweep_best(n_clicks, session_id):
     State("ui-path-loss-exp", "value"),
     State("ui-bandwidth-mhz", "value"),
     State("ui-sinr-threshold", "value"),
-    State("ui-hetnet", "value"),
-    State("ui-n-macro", "value"),
-    State("ui-n-small", "value"),
-    State("ui-macro-power", "value"),
-    State("ui-small-power", "value"),
     State("spec-mode", "value"),
     State("capacity-default", "value"),
     State("station-spec-table", "data"),
@@ -4472,7 +4216,6 @@ def start_algo_compare_job(
     n_clicks, session_id, selected_algos,
     n_stations,
     ui_tx_power, ui_path_loss_exp, ui_bandwidth_mhz, ui_sinr_threshold,
-    ui_hetnet, ui_n_macro, ui_n_small, ui_macro_power, ui_small_power,
     spec_mode, capacity_default, station_specs,
     score_mode, spectral_eff_mode, time_profile, time_hour,
 ):
@@ -4505,11 +4248,6 @@ def start_algo_compare_job(
         "capacity_default": capacity_default,
         "station_specs": station_specs,
         "ui_tx_power": ui_tx_power,
-        "ui_hetnet": ui_hetnet,
-        "ui_n_macro": ui_n_macro,
-        "ui_n_small": ui_n_small,
-        "ui_macro_power": ui_macro_power,
-        "ui_small_power": ui_small_power,
         "score_mode": score_mode or "traffic",
         "spectral_efficiency_mode": spectral_eff_mode or "shannon",
         "time_profile": time_profile or "flat",
@@ -4552,21 +4290,14 @@ def _run_algo_compare_thread(session_id: str) -> None:
         env.time_profile = cfg.get("time_profile", "flat")
         env.time_hour = max(0, min(23, int(cfg.get("time_hour", 12))))
 
-        hetnet_enabled = normalize_triggered_bool(cfg["ui_hetnet"])
-
         def _build_problem(k_val):
             cap = capacity_for_k(k_val, cfg["spec_mode"], cfg["station_specs"],
                                  safe_float(cfg["capacity_default"], 2000.0))
             tx = tx_power_for_k(
                 k_val,
-                hetnet_enabled=hetnet_enabled,
-                ui_tx_power=safe_float(cfg["ui_tx_power"], 43.0),
-                n_macro=safe_int(cfg["ui_n_macro"], 0),
-                n_small=safe_int(cfg["ui_n_small"], 0),
-                macro_power=safe_float(cfg["ui_macro_power"], 43.0),
-                small_power=safe_float(cfg["ui_small_power"], 30.0),
-                spec_mode=cfg["spec_mode"],
-                spec_rows=cfg["station_specs"],
+                safe_float(cfg["ui_tx_power"], 43.0),
+                cfg["spec_mode"],
+                cfg["station_specs"],
             )
             r = radius_from_tx(tx, prop)
             prob = ProblemInput.from_env(
