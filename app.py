@@ -237,6 +237,7 @@ def ensure_station_spec_rows(
     default_radius: float,
     default_capacity: float,
     default_tx_power: float = 43.0,
+    default_bandwidth: float = 10.0,
 ) -> list[dict[str, Any]]:
     rows = rows or []
     norm_rows: list[dict[str, Any]] = []
@@ -249,6 +250,7 @@ def ensure_station_spec_rows(
                 "radius_m": safe_float(old.get("radius_m"), default_radius),
                 "capacity": safe_float(old.get("capacity"), default_capacity),
                 "tx_power_dbm": safe_float(old.get("tx_power_dbm"), default_tx_power),
+                "bandwidth_mhz": safe_float(old.get("bandwidth_mhz"), default_bandwidth),
             }
         )
 
@@ -270,6 +272,23 @@ def coerce_station_tx_power_array(
             tx_power.append(float(fallback_tx))
 
     return np.asarray(tx_power, dtype=float)
+
+
+def coerce_station_bandwidth_array(
+    rows: list[dict[str, Any]] | None,
+    station_points: int,
+    fallback_bandwidth: float,
+) -> np.ndarray:
+    rows = rows or []
+    bw = []
+
+    for i in range(station_points):
+        if i < len(rows) and isinstance(rows[i], dict):
+            bw.append(safe_float(rows[i].get("bandwidth_mhz"), fallback_bandwidth))
+        else:
+            bw.append(float(fallback_bandwidth))
+
+    return np.asarray(bw, dtype=float)
 
 
 def coerce_station_capacity_array(
@@ -296,10 +315,13 @@ def set_station_spec_rows_from_arrays(
     fallback_radius: float,
     fallback_capacity: float,
     fallback_tx: float = 43.0,
+    bandwidth: np.ndarray | list[float] | None = None,
+    fallback_bandwidth: float = 10.0,
 ) -> list[dict[str, Any]]:
     radius_arr = np.asarray(radius, dtype=float).reshape(-1)
     capacity_arr = np.asarray(capacity, dtype=float).reshape(-1)
     tx_arr = np.asarray(tx_power, dtype=float).reshape(-1)
+    bw_arr = np.asarray(bandwidth, dtype=float).reshape(-1) if bandwidth is not None else np.array([])
     target_count = max(len(radius_arr), len(capacity_arr), len(tx_arr))
 
     rows: list[dict[str, Any]] = []
@@ -311,6 +333,7 @@ def set_station_spec_rows_from_arrays(
                 "radius_m": float(radius_arr[idx]) if idx < len(radius_arr) else float(fallback_radius),
                 "capacity": float(capacity_arr[idx]) if idx < len(capacity_arr) else float(fallback_capacity),
                 "tx_power_dbm": float(tx_arr[idx]) if idx < len(tx_arr) else float(fallback_tx),
+                "bandwidth_mhz": float(bw_arr[idx]) if idx < len(bw_arr) else float(fallback_bandwidth),
             }
         )
 
@@ -768,6 +791,7 @@ def build_station_popup(
     capacity: float,
     tx_power: float,
     radius_m: float,
+    bandwidth: float = 10.0,
 ):
     status_text, status_color = station_status(load, capacity)
     remaining = capacity - load if capacity > 0 else 0.0
@@ -827,20 +851,24 @@ def build_station_popup(
                         },
                     ),
 
-                    html.Label("Tx Power (dBm)", style={"display": "block", "fontWeight": "700"}),
-                    dcc.Input(
+                    html.Label("Tx Power (dBm)", style={"display": "block", "fontWeight": "700",
+                                                              "marginTop": "6px"}),
+                    dcc.Slider(
                         id={"type": "station-tx-input", "index": station_idx},
-                        type="number",
-                        min=10,
-                        max=60,
-                        step=1,
+                        min=20, max=50, step=1,
                         value=float(tx_power),
-                        debounce=True,
-                        style={
-                            "width": "100%",
-                            "boxSizing": "border-box",
-                            "marginTop": "2px",
-                        },
+                        tooltip={"placement": "bottom", "always_visible": False},
+                        marks={20: "20", 30: "30", 43: "43", 50: "50"},
+                    ),
+
+                    html.Label("대역폭 (MHz)", style={"display": "block", "fontWeight": "700",
+                                                      "marginTop": "6px"}),
+                    dcc.Slider(
+                        id={"type": "station-bandwidth-input", "index": station_idx},
+                        min=1, max=100, step=1,
+                        value=float(bandwidth),
+                        tooltip={"placement": "bottom", "always_visible": False},
+                        marks={1: "1", 10: "10", 20: "20", 50: "50", 100: "100"},
                     ),
 
                     html.Button(
@@ -891,12 +919,15 @@ def build_station_layers(
     fallback_tx = float(np.asarray(prop.get("tx_power_dbm", [43.0]), dtype=float).ravel()[0])
     tx = coerce_station_tx_power_array(station_specs, len(stations), fallback_tx)
 
+    fallback_bw = float(prop.get("bandwidth_mhz", 10.0))
+    bw = coerce_station_bandwidth_array(station_specs, len(stations), fallback_bw)
+
     prop_for_radius = {
         "path_loss_ref_db": float(prop.get("path_loss_ref_db", 38.0)),
         "noise_floor_dbm": float(prop.get("noise_floor_dbm", -97.0)),
         "sinr_threshold_db": float(prop.get("sinr_threshold_db", 3.0)),
         "path_loss_exponent": float(prop.get("path_loss_exponent", 3.5)),
-        "bandwidth_mhz": float(prop.get("bandwidth_mhz", 10.0)),
+        "bandwidth_mhz": fallback_bw,
     }
     radii = radius_from_tx(tx, prop_for_radius)
 
@@ -922,6 +953,7 @@ def build_station_layers(
         weight = 3 if selected_station_idx == i else 1
         radius_m = float(radii[i]) if i < len(radii) else 300.0
         tx_i = float(tx[i]) if i < len(tx) else fallback_tx
+        bw_i = float(bw[i]) if i < len(bw) else fallback_bw
 
         # 중요:
         # 커버 반경 Circle은 넓은 면적을 차지하므로 클릭 이벤트를 가로채지 않게 interactive=False.
@@ -961,6 +993,7 @@ def build_station_layers(
                         capacity=cap,
                         tx_power=tx_i,
                         radius_m=radius_m,
+                        bandwidth=bw_i,
                     ),
                 ],
             )
@@ -991,6 +1024,7 @@ def build_station_layers(
                         capacity=cap,
                         tx_power=tx_i,
                         radius_m=radius_m,
+                        bandwidth=bw_i,
                     ),
                 ],
             )
@@ -1423,14 +1457,24 @@ def algo_sidebar_layout():
         _disclosure(
             "기지국 스펙",
             [
-                dcc.RadioItems(
-                    id="spec-mode",
-                    options=[
-                        {"label": "전체 동일", "value": "전체 동일"},
-                        {"label": "기지국별 개별", "value": "기지국별 개별"},
-                    ],
-                    value="전체 동일",
-                    inline=True,
+                html.Label("송신 전력 (dBm)"),
+                dcc.Slider(
+                    id="ui-tx-power",
+                    min=20,
+                    max=50,
+                    step=1,
+                    value=43,
+                    tooltip={"placement": "bottom"},
+                ),
+
+                html.Label("대역폭 (MHz)"),
+                dcc.Slider(
+                    id="ui-bandwidth-mhz",
+                    min=1,
+                    max=100,
+                    step=1,
+                    value=10,
+                    tooltip={"placement": "bottom"},
                 ),
 
                 html.Label("오버헤드 비율 (%)"),
@@ -1458,6 +1502,18 @@ def algo_sidebar_layout():
                     style={"display": "none"},
                 ),
 
+                html.Hr(style={"margin": "10px 0 6px"}),
+
+                dcc.RadioItems(
+                    id="spec-mode",
+                    options=[
+                        {"label": "전체 동일", "value": "전체 동일"},
+                        {"label": "기지국별 개별", "value": "기지국별 개별"},
+                    ],
+                    value="전체 동일",
+                    inline=True,
+                ),
+
                 html.Div(
                     [
                         dash_table.DataTable(
@@ -1467,8 +1523,9 @@ def algo_sidebar_layout():
                                 {"name": "radius_m", "id": "radius_m", "type": "numeric", "editable": False},
                                 {"name": "capacity", "id": "capacity", "type": "numeric", "editable": True},
                                 {"name": "tx_power_dbm", "id": "tx_power_dbm", "type": "numeric", "editable": True},
+                                {"name": "bandwidth_mhz", "id": "bandwidth_mhz", "type": "numeric", "editable": True},
                             ],
-                            data=ensure_station_spec_rows([], 5, 300.0, 2000.0, 43.0),
+                            data=ensure_station_spec_rows([], 5, 300.0, 2000.0, 43.0, 10.0),
                             editable=True,
                             page_size=10,
                             style_table={"overflowX": "auto"},
@@ -1485,16 +1542,6 @@ def algo_sidebar_layout():
         _disclosure(
             "전파 모델",
             [
-                html.Label("송신 전력 (dBm)"),
-                dcc.Slider(
-                    id="ui-tx-power",
-                    min=20,
-                    max=50,
-                    step=1,
-                    value=43,
-                    tooltip={"placement": "bottom"},
-                ),
-
                 html.Label("경로 손실 지수 n"),
                 dcc.Slider(
                     id="ui-path-loss-exp",
@@ -1502,16 +1549,6 @@ def algo_sidebar_layout():
                     max=5.0,
                     step=0.1,
                     value=3.5,
-                    tooltip={"placement": "bottom"},
-                ),
-
-                html.Label("대역폭 (MHz)"),
-                dcc.Slider(
-                    id="ui-bandwidth-mhz",
-                    min=1,
-                    max=100,
-                    step=1,
-                    value=10,
                     tooltip={"placement": "bottom"},
                 ),
 
@@ -2374,6 +2411,7 @@ def update_area_demand_display(area_demand, resolution_m):
     Input("spec-mode", "value"),
     Input("capacity-default", "value"),
     Input("ui-tx-power", "value"),
+    Input("ui-bandwidth-mhz", "value"),
     Input("ui-hetnet", "value"),
     Input("n-stations", "value"),
     Input("ui-n-macro", "value"),
@@ -2384,6 +2422,7 @@ def refresh_station_spec_table(
     spec_mode,
     capacity_default,
     ui_tx_power,
+    ui_bandwidth_mhz,
     hetnet_value,
     n_stations,
     ui_n_macro,
@@ -2399,6 +2438,7 @@ def refresh_station_spec_table(
         target_count = safe_int(n_stations, 5)
 
     default_tx = safe_float(ui_tx_power, 43.0)
+    default_bw = safe_float(ui_bandwidth_mhz, 10.0)
 
     rows = ensure_station_spec_rows(
         existing_rows,
@@ -2406,6 +2446,7 @@ def refresh_station_spec_table(
         default_radius=300.0,
         default_capacity=safe_float(capacity_default, 2000.0),
         default_tx_power=default_tx,
+        default_bandwidth=default_bw,
     )
 
     style = {
@@ -2849,11 +2890,12 @@ def update_map_layers(
     Input({"type": "station-apply", "index": ALL}, "n_clicks"),
     State({"type": "station-capacity-input", "index": ALL}, "value"),
     State({"type": "station-tx-input", "index": ALL}, "value"),
+    State({"type": "station-bandwidth-input", "index": ALL}, "value"),
     State({"type": "station-apply", "index": ALL}, "id"),
     State("station-spec-table", "data"),
     prevent_initial_call=True,
 )
-def apply_station_popup_edit(n_clicks, capacity_values, tx_values, apply_ids, rows):
+def apply_station_popup_edit(n_clicks, capacity_values, tx_values, bw_values, apply_ids, rows):
     triggered = ctx.triggered_id
 
     if not triggered or not isinstance(triggered, dict):
@@ -2879,19 +2921,23 @@ def apply_station_popup_edit(n_clicks, capacity_values, tx_values, apply_ids, ro
         300.0,
         2000.0,
         43.0,
+        10.0,
     )
 
     old_capacity = rows[station_idx]["capacity"]
     old_tx = rows[station_idx]["tx_power_dbm"]
+    old_bw = rows[station_idx].get("bandwidth_mhz", 10.0)
 
     rows[station_idx]["capacity"] = safe_float(capacity_values[pos], old_capacity)
     rows[station_idx]["tx_power_dbm"] = safe_float(tx_values[pos], old_tx)
+    rows[station_idx]["bandwidth_mhz"] = safe_float(bw_values[pos] if bw_values else None, old_bw)
 
     status = html.Div(
         (
             f"Station #{station_idx + 1} 스펙 적용 완료 | "
             f"Capacity={rows[station_idx]['capacity']:.1f}, "
-            f"Tx Power={rows[station_idx]['tx_power_dbm']:.1f} dBm"
+            f"Tx={rows[station_idx]['tx_power_dbm']:.1f} dBm, "
+            f"BW={rows[station_idx]['bandwidth_mhz']:.0f} MHz"
         ),
         style={"color": "#166534"},
     )
