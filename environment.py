@@ -41,6 +41,21 @@ def _to_polygon_list(geometry: object) -> list[Polygon]:
         return out
     return []
 
+# 24시간 상대 트래픽 강도 프로파일 (0–1, 인덱스=시각)
+TIME_PROFILES: dict[str, list[float]] = {
+    "flat": [1.0] * 24,
+    "주거지역": [0.20, 0.15, 0.10, 0.10, 0.15, 0.30, 0.60, 0.70,
+                0.60, 0.50, 0.50, 0.60, 0.70, 0.60, 0.50, 0.50,
+                0.60, 0.80, 0.90, 1.00, 0.90, 0.70, 0.50, 0.30],
+    "업무지구": [0.10, 0.05, 0.05, 0.05, 0.10, 0.20, 0.50, 0.80,
+                1.00, 0.95, 0.90, 0.85, 0.95, 0.90, 0.85, 0.80,
+                0.70, 0.60, 0.40, 0.30, 0.25, 0.20, 0.15, 0.10],
+    "혼합": [0.15, 0.10, 0.10, 0.10, 0.15, 0.25, 0.55, 0.75,
+             0.80, 0.73, 0.70, 0.73, 0.83, 0.75, 0.70, 0.65,
+             0.65, 0.70, 0.65, 0.65, 0.58, 0.45, 0.35, 0.20],
+}
+
+
 class SyntheticEnvironment:
     """
     1. Local Coordinate: 좌상단을 (0,0)으로 하는 미터(m) 단위 좌표계
@@ -100,6 +115,10 @@ class SyntheticEnvironment:
         self.traffic_series = None
         self.dynamic_frame_index = 0
         self._obstacle_mask = np.zeros((self.rows, self.cols), dtype=bool)
+
+        # 시간대별 트래픽 변동
+        self.time_hour: int = 12
+        self.time_profile: str = "flat"
 
     def generate_traffic(self, num_hotspots=5, max_intensity=100, spread_m=500, base_intensity=10):
         """레거시 multi_hotspot 생성 (m 단위 spread). 기존 동작 유지."""
@@ -476,12 +495,20 @@ class SyntheticEnvironment:
     def get_local_data(self):
         # Local 좌표계 Array 반환 (좌하단 기준). 장애물 마스킹이 반영된 traffic_map 기준.
         traffic = self.traffic_map
+
+        # 시간대 프로파일 스케일 적용
+        profile = TIME_PROFILES.get(self.time_profile, TIME_PROFILES["flat"])
+        hour = max(0, min(23, int(self.time_hour)))
+        time_scale = float(profile[hour])
+        if time_scale != 1.0:
+            traffic = np.asarray(traffic) * time_scale
+
         mask = np.asarray(traffic).ravel() > 0.1
-        
+
         x_vals = self.x_grid.ravel()[mask]
         y_vals = self.y_grid.ravel()[mask]
         traffic_vals = np.asarray(traffic).ravel()[mask]
-        
+
         return np.column_stack((x_vals, y_vals, traffic_vals))
     
     def get_local_data_top_left(self):
