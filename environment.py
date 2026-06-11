@@ -92,7 +92,7 @@ class SyntheticEnvironment:
         self.x_grid, self.y_grid = np.meshgrid(self.x_range, self.y_range)
         
         lat_span = self.height_km / 111.0
-        lon_span = self.width_km / 88.0
+        lon_span = self.width_km / (111.32 * math.cos(math.radians(center_lat)))
         
         self.lat_min = center_lat - lat_span / 2
         self.lat_max = center_lat + lat_span / 2
