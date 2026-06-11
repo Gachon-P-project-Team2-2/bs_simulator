@@ -806,7 +806,7 @@ def build_station_popup(
                     html.Div(f"Usage: {usage_pct:.1f}%"),
                     html.Div(f"Remaining: {remaining:.1f}"),
                     html.Div(f"Tx Power: {tx_power:.1f} dBm"),
-                    html.Div(f"예상 커버 반경: {radius_m:.0f} m"),
+                    html.Div(f"예상 커버 반경: {radius_m:.0f} m (시각화 전용)"),
 
                     html.Hr(style={"margin": "8px 0"}),
 
@@ -2278,7 +2278,7 @@ def update_noise_caption(tx_power, path_loss_exp, bandwidth_mhz, sinr_threshold)
 
     return (
         f"잡음 바닥: {prop['noise_floor_dbm']:.1f} dBm "
-        f"| 단일 기지국 예상 커버 반경: {r_eff:.0f} m"
+        f"| 단일 기지국 예상 커버 반경: {r_eff:.0f} m (시각화 전용, 실제 커버리지는 SINR 기반)"
     )
 
 
