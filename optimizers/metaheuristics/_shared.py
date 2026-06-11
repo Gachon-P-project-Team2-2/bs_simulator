@@ -6,32 +6,39 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..base import ProblemInput, sinr_coverage
+from ..base import ProblemInput, sinr_coverage, spectral_efficiency
 from ..base import _resolve_station_params
 
 
 def calculate_score(stations: np.ndarray, problem: ProblemInput) -> float:
     """기지국 배치의 점수 (높을수록 좋음).
 
-    score = Σ min(station_load, capacity)
-
-    SINR 기반 커버리지와 best-SINR 기지국 배정 사용.
-    (이전 버전의 + 0.1·covered_area 항 제거 — 임의 가중치 없이 트래픽 단위 통일)
+    score_mode='traffic':    Σ min(station_load, capacity)   — 트래픽 커버리지
+    score_mode='throughput': Σ bandwidth × η(SINR_i)         — 총 처리량 [Mbps]
     """
     K = len(stations)
     if K == 0:
         return 0.0
 
-    is_covered, serving_idx, _ = sinr_coverage(stations, problem)
+    is_covered, serving_idx, best_sinr_db = sinr_coverage(stations, problem)
     _, capacities = _resolve_station_params(problem, K, default_radius=0.0, default_capacity=0.0)
 
     valid_indices = np.where(is_covered)[0]
     if len(valid_indices) == 0:
         return 0.0
 
+    score_mode = getattr(problem, "score_mode", "traffic")
+    if score_mode == "throughput":
+        se_mode = getattr(problem, "spectral_efficiency_mode", "shannon")
+        eta = spectral_efficiency(best_sinr_db[valid_indices], se_mode)
+        cell_tp = problem.bandwidth_mhz * eta
+        station_tp = np.zeros(K)
+        np.add.at(station_tp, serving_idx[valid_indices], cell_tp)
+        return float(station_tp.sum())
+
+    # traffic (default)
     station_loads = np.zeros(K)
     np.add.at(station_loads, serving_idx[valid_indices], problem.weights[valid_indices])
-
     return float(np.sum(np.minimum(station_loads, capacities)))
 
 
