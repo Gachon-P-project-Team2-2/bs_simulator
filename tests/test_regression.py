@@ -9,7 +9,7 @@ conftest.py가 Dash 앱을 자동 시작/종료하고 세션 전역 브라우저
 from __future__ import annotations
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 # REGISTRY / PATTERN_CHOICES를 직접 import하여, 항목 추가/제거 시 테스트가 자동 갱신됨
 from optimizers import REGISTRY
@@ -20,11 +20,38 @@ from patterns import PATTERN_CHOICES
 # 헬퍼
 # ---------------------------------------------------------------------------
 def _generate_data(page: Page) -> None:
-    """가상 데이터 생성 버튼 클릭 + 완료 대기."""
+    """영역 지정 후 가상 데이터 생성 버튼 클릭 + 완료 대기."""
+    _define_region(page)
     btn = page.get_by_role("button", name="가상 데이터 생성")
     btn.scroll_into_view_if_needed()
     btn.click()
     page.wait_for_selector("text=가상 환경 생성 완료", timeout=60_000)
+
+
+def _define_region(page: Page) -> None:
+    """지도에서 사각형 영역을 지정하고 확인한다."""
+    if page.get_by_role("button", name="가상 데이터 생성").count() > 0:
+        return
+
+    page.get_by_role("button", name="영역 지정").click()
+
+    draw_btn = page.locator(".leaflet-draw-draw-rectangle")
+    expect(draw_btn).to_be_visible()
+    try:
+        page.wait_for_selector(".leaflet-draw-actions:visible", timeout=2_000)
+    except PlaywrightTimeoutError:
+        draw_btn.click()
+
+    box = page.locator("#sim-map").bounding_box()
+    assert box is not None
+    page.mouse.move(box["x"] + 260, box["y"] + 180)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 560, box["y"] + 420)
+    page.mouse.up()
+
+    page.locator("#region-popup").wait_for(state="visible", timeout=10_000)
+    page.get_by_role("button", name="확인").click()
+    expect(page.get_by_role("button", name="가상 데이터 생성")).to_be_visible()
 
 
 def _run_optimization(page: Page, timeout_ms: int = 180_000) -> None:
@@ -86,18 +113,18 @@ def _select_pattern(page: Page, name: str) -> None:
 def test_app_loads(page: Page):
     """기본 UI가 로드되고 콘솔 에러가 없는지."""
     expect(page.get_by_text("시뮬레이터 제어")).to_be_visible()
-    expect(page.get_by_text("1. 환경 설정")).to_be_visible()
-    expect(page.get_by_text("2. 시각화 설정")).to_be_visible()
-    expect(page.get_by_text("계산 알고리즘")).to_be_visible()
-    expect(page.get_by_role("button", name="가상 데이터 생성")).to_be_visible()
+    expect(page.get_by_text("격자 크기 (m)")).to_be_visible()
+    expect(page.get_by_role("heading", name="트래픽 세부 설정")).to_be_visible()
+    expect(page.get_by_role("heading", name="알고리즘")).to_be_visible()
+    expect(page.get_by_role("heading", name="전파 모델")).to_be_visible()
+    expect(page.get_by_role("button", name="영역 지정")).to_be_visible()
 
 
 def test_generate_data_golden_path(page: Page):
-    """데이터 생성 → 성공 메시지 + 다운로드 버튼 노출."""
+    """영역 지정 후 데이터 생성 → 성공 메시지 노출."""
     _generate_data(page)
     expect(page.get_by_text("가상 환경 생성 완료")).to_be_visible()
-    expect(page.get_by_role("button", name="GIS CSV")).to_be_visible()
-    expect(page.get_by_role("button", name="Local CSV")).to_be_visible()
+    expect(page.get_by_role("button", name="가상 데이터 생성")).to_be_visible()
 
 
 def test_algorithm_selectbox_has_all_optimizers(page: Page):

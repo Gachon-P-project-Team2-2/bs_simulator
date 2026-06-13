@@ -197,6 +197,14 @@ def safe_int(value: Any, default: int) -> int:
         return int(default)
 
 
+def has_custom_region(custom_region: Any) -> bool:
+    return (
+        isinstance(custom_region, dict)
+        and bool(custom_region.get("width_km"))
+        and bool(custom_region.get("height_km"))
+    )
+
+
 def parse_map_center(center: Any) -> tuple[float, float]:
     if isinstance(center, dict):
         lat = center.get("lat", center.get("latitude"))
@@ -1135,7 +1143,13 @@ def sidebar_layout():
                         },
                     ),
                     html.Button(
-                        "영역 지우기",
+                        "영역 지정",
+                        id="create-env-btn",
+                        n_clicks=0,
+                        className="primary-button",
+                    ),
+                    html.Button(
+                        "초기화",
                         id="clear-region-btn",
                         n_clicks=0,
                         style={
@@ -1147,17 +1161,10 @@ def sidebar_layout():
                             "background": "#cf202f",
                             "color": "white",
                             "border": "0",
-                            "borderRadius": "100px",
+                            "borderRadius": "6px",
                             "fontSize": "12px",
                             "fontWeight": "600",
                         },
-                    ),
-
-                    html.Button(
-                        "가상 데이터 생성",
-                        id="create-env-btn",
-                        n_clicks=0,
-                        className="primary-button",
                     ),
                     html.Div(id="create-status", style={"fontSize": "13px", "marginTop": "8px"}),
                 ],
@@ -1276,14 +1283,6 @@ def algo_sidebar_layout():
                     clearable=False,
                     style={"marginBottom": "10px"},
                 ),
-
-                html.Label("알고리즘 선택"),
-                dcc.Dropdown(
-                    id="algo-select",
-                    options=[{"label": x, "value": x} for x in available_algos],
-                    value=default_algo,
-                ),
-                html.Div(id="hyperparam-controls"),
             ],
         ),
 
@@ -1298,6 +1297,19 @@ def algo_sidebar_layout():
                     value=5,
                     tooltip={"placement": "bottom"},
                 ),
+            ],
+        ),
+
+        _section(
+            "알고리즘",
+            [
+                html.Label("알고리즘 선택"),
+                dcc.Dropdown(
+                    id="algo-select",
+                    options=[{"label": x, "value": x} for x in available_algos],
+                    value=default_algo,
+                ),
+                html.Div(id="hyperparam-controls"),
             ],
         ),
 
@@ -1459,6 +1471,7 @@ def serve_layout():
             dcc.Store(id="left-sidebar-open", data=True),
             dcc.Store(id="right-sidebar-open", data=True),
             dcc.Store(id="sidebar-resize-dummy"),
+            dcc.Store(id="region-draw-activate-dummy", data=False),
 
             dcc.Download(id="download-gis-csv"),
             dcc.Download(id="download-local-csv"),
@@ -1494,40 +1507,6 @@ def serve_layout():
                                     "flexWrap": "wrap",
                                     "marginBottom": "16px",
                                 },
-                            ),
-
-                            html.Div(
-                                [
-                                    html.Div(
-                                        id="traffic-frame-label",
-                                        style={"fontWeight": "700", "marginBottom": "4px"},
-                                    ),
-
-                                    dcc.Slider(
-                                        id="traffic-frame-slider",
-                                        min=0,
-                                        max=1,
-                                        step=1,
-                                        value=0,
-                                        marks=None,
-                                    ),
-
-                                    html.Button(
-                                        "지도 재생",
-                                        id="traffic-play-btn",
-                                        n_clicks=0,
-                                        style={"marginRight": "6px"},
-                                    ),
-
-                                    dcc.Interval(
-                                        id="traffic-frame-interval",
-                                        interval=500,
-                                        disabled=True,
-                                        n_intervals=0,
-                                    ),
-                                ],
-                                id="dynamic-frame-wrap",
-                                style={"display": "none", "marginBottom": "12px"},
                             ),
 
                             html.Div(
@@ -1581,6 +1560,54 @@ def serve_layout():
                                     ),
                                 ],
                                 style={"position": "relative"},
+                            ),
+
+                            html.Div(
+                                [
+                                    html.Div(
+                                        id="traffic-frame-label",
+                                        className="history-panel__label",
+                                    ),
+
+                                    dcc.Slider(
+                                        id="traffic-frame-slider",
+                                        min=0,
+                                        max=1,
+                                        step=1,
+                                        value=0,
+                                        marks=None,
+                                        tooltip={"placement": "bottom"},
+                                    ),
+
+                                    html.Div(
+                                        [
+                                            html.Button(
+                                                "▶ 재생",
+                                                id="traffic-play-btn",
+                                                n_clicks=0,
+                                                className="secondary-button",
+                                                style={"marginRight": "6px"},
+                                            ),
+                                            html.Button(
+                                                "⏭ 초기화",
+                                                id="traffic-reset-btn",
+                                                n_clicks=0,
+                                                className="secondary-button",
+                                            ),
+                                        ],
+                                        style={"marginTop": "8px"},
+                                    ),
+
+                                    dcc.Interval(
+                                        id="traffic-frame-interval",
+                                        interval=500,
+                                        disabled=True,
+                                        n_intervals=0,
+                                    ),
+                                ],
+                                id="dynamic-frame-wrap",
+                                className="history-panel",
+                                style={"display": "none"},
                             ),
 
                             html.Div(id="run-status", style={"margin": "12px 0", "fontSize": "13px"}),
@@ -1803,14 +1830,24 @@ def serve_layout():
 
                             html.Div(
                                 [
-                                    html.Label("너비 (km)", style={"fontWeight": "600", "fontSize": "13px"}),
+                                    html.Label("너비 (km)", style={
+                                        "fontWeight": "600",
+                                        "fontSize": "13px",
+                                        "color": "#374151",
+                                    }),
                                     dcc.Input(
                                         id="region-width-km",
                                         type="number",
                                         min=0.1,
                                         max=200,
-                                        step=0.1,
-                                        style={"width": "100%", "padding": "6px", "borderRadius": "4px", "border": "1px solid #d1d5db"},
+                                        step=0.01,
+                                        style={
+                                            "width": "100%",
+                                            "padding": "6px",
+                                            "borderRadius": "4px",
+                                            "border": "1px solid #d1d5db",
+                                            "color": "#111827",
+                                        },
                                     ),
                                 ],
                                 style={"marginBottom": "12px"},
@@ -1818,14 +1855,24 @@ def serve_layout():
 
                             html.Div(
                                 [
-                                    html.Label("높이 (km)", style={"fontWeight": "600", "fontSize": "13px"}),
+                                    html.Label("높이 (km)", style={
+                                        "fontWeight": "600",
+                                        "fontSize": "13px",
+                                        "color": "#374151",
+                                    }),
                                     dcc.Input(
                                         id="region-height-km",
                                         type="number",
                                         min=0.1,
                                         max=200,
-                                        step=0.1,
-                                        style={"width": "100%", "padding": "6px", "borderRadius": "4px", "border": "1px solid #d1d5db"},
+                                        step=0.01,
+                                        style={
+                                            "width": "100%",
+                                            "padding": "6px",
+                                            "borderRadius": "4px",
+                                            "border": "1px solid #d1d5db",
+                                            "color": "#111827",
+                                        },
                                     ),
                                 ],
                                 style={"marginBottom": "20px"},
@@ -1843,7 +1890,7 @@ def serve_layout():
                                             "background": "#7132f5",
                                             "color": "white",
                                             "border": "0",
-                                            "borderRadius": "100px",
+                                            "borderRadius": "6px",
                                             "cursor": "pointer",
                                             "fontWeight": "700",
                                         },
@@ -1910,6 +1957,10 @@ app.index_string = """
         <style>
             button { cursor: pointer; }
             .leaflet-interactive { cursor: pointer; }
+            /* rectangle draw is launched from the sidebar button, not the map toolbar */
+            a.leaflet-draw-draw-rectangle { display: none !important; }
+            /* Leaflet Draw shows a floating Cancel action while rectangle mode is active. */
+            .leaflet-draw-actions { display: none !important; }
             /* delete-layers button is kept enabled for programmatic clear but hidden from UI */
             a.leaflet-draw-edit-remove { display: none !important; }
         </style>
@@ -1959,6 +2010,18 @@ def toggle_obstacle_source_controls(source):
 
 
 
+
+
+@app.callback(
+    Output("create-env-btn", "children"),
+    Input("custom-region-store", "data"),
+    Input("drawn-region-store", "data"),
+    Input("region-draw-activate-dummy", "data"),
+)
+def update_create_env_button_label(custom_region, drawn_region, is_drawing):
+    if is_drawing and not drawn_region and not has_custom_region(custom_region):
+        return "취소"
+    return "가상 데이터 생성" if has_custom_region(custom_region) else "영역 지정"
 
 
 @app.callback(
@@ -2140,6 +2203,7 @@ def sync_sliders_to_store(tx_vals, bw_vals, tx_ids):
     State("min-obstacle-area-m2", "value"),
     State("max-map-obstacles", "value"),
     State("custom-region-store", "data"),
+    State("region-draw-activate-dummy", "data"),
     prevent_initial_call=True,
 )
 def create_environment(
@@ -2167,24 +2231,26 @@ def create_environment(
     min_obstacle_area_m2,
     max_map_obstacles,
     custom_region,
+    is_drawing,
 ):
     if not n_clicks:
         raise PreventUpdate
 
+    if not has_custom_region(custom_region):
+        if is_drawing:
+            return False, no_update, no_update, no_update, ""
+        return False, no_update, no_update, no_update, html.Div(
+            "지도에서 생성할 영역을 드래그하세요.",
+            style={"color": "#b45309", "fontWeight": "600"},
+        )
+
     state = get_session_state(session_id)
 
-    # 영역이 미지정이면 기본 가상 영역(서울 중심, 5 km × 5 km) 사용
-    using_default_region = not (isinstance(custom_region, dict) and custom_region.get("width_km") and custom_region.get("height_km"))
-
     try:
-        if using_default_region:
-            center_lat, center_lon = 37.5665, 126.9780
-            width_km, height_km = 5.0, 5.0
-        else:
-            center_lat = float(custom_region["center_lat"])
-            center_lon = float(custom_region["center_lon"])
-            width_km = max(float(custom_region["width_km"]), 0.1)
-            height_km = max(float(custom_region["height_km"]), 0.1)
+        center_lat = float(custom_region["center_lat"])
+        center_lon = float(custom_region["center_lon"])
+        width_km = max(float(custom_region["width_km"]), 0.1)
+        height_km = max(float(custom_region["height_km"]), 0.1)
 
         env = SyntheticEnvironment(
             center_lat=center_lat,
@@ -2256,13 +2322,15 @@ def create_environment(
         state.pop("range_results", None)
         state.pop("station_overlay_loads", None)
 
-        region_note = " (기본 영역)" if using_default_region else ""
         msg = (
-            f"가상 환경 생성 완료{region_note} | 영역: {width_km:.2f} km × {height_km:.2f} km | "
+            f"가상 환경 생성 완료 | 영역: {width_km:.2f} km × {height_km:.2f} km | "
             f"{obstacle_source}(장애물): 원본 {raw_count}개 중 {applied_count}개 적용"
         )
 
-        return False, version_token(), None, None, None
+        return False, version_token(), None, None, html.Div(
+            msg,
+            style={"color": "#166534", "fontWeight": "600"},
+        )
 
     except Exception as exc:
         tb = traceback.format_exc(limit=4)
@@ -2299,13 +2367,7 @@ def refresh_dynamic_frame_controls(env_meta, session_id):
     current = max(0, min(current, max_frame))
 
     return (
-        {
-            "display": "block",
-            "marginBottom": "12px",
-            "background": "#fff",
-            "padding": "10px",
-            "borderRadius": "8px",
-        },
+        {"display": "block"},
         max_frame,
         current,
         f"동적 트래픽 프레임: {current} / {max_frame}",
@@ -2321,7 +2383,7 @@ def refresh_dynamic_frame_controls(env_meta, session_id):
 )
 def toggle_traffic_playback(n_clicks, disabled):
     next_disabled = not bool(disabled)
-    return next_disabled, "지도 재생" if next_disabled else "정지"
+    return next_disabled, "▶ 재생" if next_disabled else "⏸ 일시정지"
 
 
 @app.callback(
@@ -2343,6 +2405,19 @@ def advance_traffic_frame(n_intervals, current_value, max_value, disabled):
         raise PreventUpdate
 
     return (current + 1) % (max_frame + 1)
+
+
+@app.callback(
+    Output("traffic-frame-slider", "value", allow_duplicate=True),
+    Output("traffic-frame-interval", "disabled", allow_duplicate=True),
+    Output("traffic-play-btn", "children", allow_duplicate=True),
+    Input("traffic-reset-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reset_traffic_frame(n_clicks):
+    if not n_clicks:
+        raise PreventUpdate
+    return 0, True, "▶ 재생"
 
 
 @app.callback(
@@ -2641,6 +2716,16 @@ def _run_optimization_thread(
             def _progress_cb(it, total, best_stations_local, best_score,
                              _k_idx=k_idx, _problem=problem):
                 geo = convert_to_geo(best_stations_local, _problem)
+                live_entry = {
+                    "iter": int(it),
+                    "best_score": float(best_score),
+                    "gen_score": float(best_score),
+                }
+                live_history = state.setdefault("opt_live_history", [])
+                if live_history and live_history[-1].get("iter") == live_entry["iter"]:
+                    live_history[-1] = live_entry
+                else:
+                    live_history.append(live_entry)
                 state["opt_progress"] = {
                     "running": True, "done": False, "error": None,
                     "algo": algo,
@@ -2648,6 +2733,7 @@ def _run_optimization_thread(
                     "iter": int(it), "total": int(total),
                     "best_score": float(best_score),
                     "stations_geo": geo.tolist(),
+                    "score_series": live_history.copy(),
                 }
 
             result = optimizer.optimize(problem, n_stations=k,
@@ -2798,7 +2884,9 @@ def start_optimization_job(
         "algo": algo,
         "k_current": 1, "k_total": len(k_list),
         "iter": 0, "total": 0, "best_score": 0.0, "stations_geo": [],
+        "score_series": [],
     }
+    state["opt_live_history"] = []
 
     threading.Thread(
         target=_run_optimization_thread,
@@ -2840,10 +2928,11 @@ def poll_optimization_progress(n_intervals, session_id):
     if progress.get("error") and not progress.get("running"):
         tb = progress["error"]
         state["opt_progress"] = {}
+        state.pop("opt_live_history", None)
         return (
             html.Div(f"계산 실패:\n{tb}",
                      style={"color": "#b91c1c", "whiteSpace": "pre-wrap"}),
-            no_update, no_update, no_update,
+            None, no_update, no_update,
             False, True,
         )
 
@@ -2861,7 +2950,8 @@ def poll_optimization_progress(n_intervals, session_id):
             f"score={best_score:.2f}, 소요 {elapsed:.2f}초",
             style={"color": "#166534"},
         )
-        return status, no_update, version_token(), version_token(), False, True
+        state.pop("opt_live_history", None)
+        return status, None, version_token(), version_token(), False, True
 
     # Running branch
     if not progress.get("running"):
@@ -2873,9 +2963,15 @@ def poll_optimization_progress(n_intervals, session_id):
     it = progress.get("iter", 0)
     total = progress.get("total", 0)
     best_score = progress.get("best_score", 0.0)
+    live_data = {
+        "running": True,
+        "algo": algo,
+        "score_series": progress.get("score_series") or state.get("opt_live_history", []),
+        "updated_at": version_token(),
+    }
 
     status = _make_progress_html(algo, k_cur, k_tot, it, total, best_score)
-    return status, version_token(), no_update, no_update, no_update, no_update
+    return status, live_data, no_update, no_update, no_update, no_update
 
 
 @app.callback(
@@ -3060,6 +3156,8 @@ def show_region_popup(region_data):
     Output("custom-region-info", "children"),
     Output("custom-region-info", "style"),
     Output("clear-region-btn", "style"),
+    Output("create-status", "children", allow_duplicate=True),
+    Output("region-draw-activate-dummy", "data", allow_duplicate=True),
     Input("region-confirm-btn", "n_clicks"),
     State("drawn-region-store", "data"),
     State("region-width-km", "value"),
@@ -3105,12 +3203,13 @@ def apply_region(n_clicks, region_data, width_km, height_km, clear_count):
         "fontSize": "12px",
         "fontWeight": "600",
     }
-    return custom, None, int(clear_count or 0) + 1, info_text, info_style, clear_style
+    return custom, None, int(clear_count or 0) + 1, info_text, info_style, clear_style, "", False
 
 
 @app.callback(
     Output("drawn-region-store", "data", allow_duplicate=True),
     Output("editcontrol-clear-count", "data", allow_duplicate=True),
+    Output("region-draw-activate-dummy", "data", allow_duplicate=True),
     Input("region-cancel-btn", "n_clicks"),
     State("editcontrol-clear-count", "data"),
     prevent_initial_call=True,
@@ -3119,7 +3218,7 @@ def cancel_region(n_clicks, clear_count):
     """Dismiss the popup and clear the drawn shape."""
     if not n_clicks:
         raise PreventUpdate
-    return None, int(clear_count or 0) + 1
+    return None, int(clear_count or 0) + 1, False
 
 
 @app.callback(
@@ -3139,13 +3238,39 @@ def sync_editcontrol_clear(count):
     Output("custom-region-info", "children", allow_duplicate=True),
     Output("custom-region-info", "style", allow_duplicate=True),
     Output("clear-region-btn", "style", allow_duplicate=True),
+    Output("env-meta", "data", allow_duplicate=True),
+    Output("opt-meta", "data", allow_duplicate=True),
+    Output("range-meta", "data", allow_duplicate=True),
+    Output("opt-live-store", "data", allow_duplicate=True),
+    Output("algo-history-store", "data", allow_duplicate=True),
+    Output("selected-station", "data", allow_duplicate=True),
+    Output("create-status", "children", allow_duplicate=True),
     Input("clear-region-btn", "n_clicks"),
+    State("session-id", "data"),
     prevent_initial_call=True,
 )
-def clear_custom_region(n_clicks):
-    """Remove the confirmed custom region."""
+def clear_custom_region(n_clicks, session_id):
+    """Remove the confirmed custom region and any generated data for it."""
     if not n_clicks:
         raise PreventUpdate
+
+    state = get_session_state(session_id)
+    for key in (
+        "env",
+        "opt_results",
+        "opt_stats",
+        "range_results",
+        "station_overlay_loads",
+        "opt_progress",
+        "sweep_config",
+        "sweep_results",
+        "sweep_progress",
+        "algo_compare_config",
+        "algo_compare_results",
+        "algo_compare_progress",
+    ):
+        state.pop(key, None)
+
     hidden_info = {
         "display": "none",
         "fontSize": "12px",
@@ -3169,7 +3294,7 @@ def clear_custom_region(n_clicks):
         "fontSize": "12px",
         "fontWeight": "600",
     }
-    return None, "", hidden_info, hidden_btn
+    return None, "", hidden_info, hidden_btn, None, None, None, None, None, None, ""
 
 
 # ---------------------------------------------------------------------------
@@ -3311,17 +3436,25 @@ def update_algo_history_chart(frame_idx, algo_history):
     Output("sidebar-convergence-chart", "figure"),
     Output("sidebar-convergence-wrap", "style"),
     Input("algo-history-store", "data"),
+    Input("opt-live-store", "data"),
 )
-def update_sidebar_convergence_chart(algo_history):
+def update_sidebar_convergence_chart(algo_history, opt_live):
     hidden = {"display": "none", "marginTop": "10px"}
     visible = {"display": "block", "marginTop": "10px"}
     empty_fig = go.Figure()
     empty_fig.update_layout(margin={"l": 30, "r": 10, "t": 10, "b": 30}, height=160)
 
-    if not isinstance(algo_history, dict) or not algo_history.get("score_series"):
+    live_series = []
+    if isinstance(opt_live, dict) and opt_live.get("running"):
+        live_series = opt_live.get("score_series") or []
+
+    if live_series:
+        series = live_series
+    elif isinstance(algo_history, dict) and algo_history.get("score_series"):
+        series = algo_history["score_series"]
+    else:
         return empty_fig, hidden
 
-    series = algo_history["score_series"]
     iters = [e["iter"] for e in series]
     best_scores = [e["best_score"] for e in series]
     gen_scores = [e.get("gen_score") for e in series]
@@ -4394,6 +4527,52 @@ def toggle_right_sidebar(n_clicks, is_open):
     else:
         return ({**_base, "width": "420px", "minWidth": "420px"},
                 True, "►", {"overflowY": "auto", "flex": "1", "padding": "16px"})
+
+
+# ── 영역 미지정 상태에서 생성 버튼으로 사각형 그리기 활성화 ────────────────
+
+app.clientside_callback(
+    """
+    function(n, customRegion, isDrawing) {
+        if (!n) {
+            return window.dash_clientside.no_update;
+        }
+        var hasRegion = customRegion && customRegion.width_km && customRegion.height_km;
+        if (hasRegion) {
+            return window.dash_clientside.no_update;
+        }
+        if (isDrawing) {
+            window.setTimeout(function() {
+                var cancelAction = document.querySelector(".leaflet-draw-actions a");
+                if (cancelAction) {
+                    cancelAction.click();
+                    return;
+                }
+                document.dispatchEvent(new KeyboardEvent("keydown", {
+                    key: "Escape",
+                    code: "Escape",
+                    keyCode: 27,
+                    which: 27,
+                    bubbles: true
+                }));
+            }, 0);
+            return false;
+        }
+        window.setTimeout(function() {
+            var drawButton = document.querySelector(".leaflet-draw-draw-rectangle");
+            if (drawButton) {
+                drawButton.click();
+            }
+        }, 0);
+        return true;
+    }
+    """,
+    Output("region-draw-activate-dummy", "data"),
+    Input("create-env-btn", "n_clicks"),
+    State("custom-region-store", "data"),
+    State("region-draw-activate-dummy", "data"),
+    prevent_initial_call=True,
+)
 
 
 # ── 가상 데이터 생성 버튼 즉시 비활성화 ────────────────────────────────────

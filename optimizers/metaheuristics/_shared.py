@@ -6,46 +6,31 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..base import ProblemInput, sinr_coverage, spectral_efficiency
-from ..base import _resolve_station_params
+from ..base import ProblemInput, sinr_coverage
 
 
 def calculate_score(stations: np.ndarray, problem: ProblemInput) -> float:
     """기지국 배치의 점수 (높을수록 좋음).
 
-    score_mode='traffic':    Σ min(station_load, capacity)   — 트래픽 커버리지
-    score_mode='throughput': Σ bandwidth × η(SINR_i)         — 총 처리량 [Mbps]
+    score_mode='cells':   커버된 셀 수         — Σ 1[SINR_i ≥ θ]
+    score_mode='traffic': 커버된 트래픽 합계    — Σ w_i  (SINR_i ≥ θ인 셀)
     """
     K = len(stations)
     if K == 0:
         return 0.0
 
     is_covered, serving_idx, best_sinr_db = sinr_coverage(stations, problem)
-    _, capacities = _resolve_station_params(problem, K, default_radius=0.0, default_capacity=0.0)
 
     valid_indices = np.where(is_covered)[0]
     if len(valid_indices) == 0:
         return 0.0
 
     score_mode = getattr(problem, "score_mode", "traffic")
-    if score_mode == "throughput":
-        se_mode = getattr(problem, "spectral_efficiency_mode", "shannon")
-        eta = spectral_efficiency(best_sinr_db[valid_indices], se_mode)
-        station_eta_sum = np.zeros(K)
-        station_count = np.zeros(K)
-        np.add.at(station_eta_sum, serving_idx[valid_indices], eta)
-        np.add.at(station_count, serving_idx[valid_indices], 1.0)
-        mean_eta = np.where(station_count > 0, station_eta_sum / station_count, 0.0)
-        station_capacity_tp = problem.bandwidth_mhz * mean_eta
-        station_demands = np.zeros(K)
-        np.add.at(station_demands, serving_idx[valid_indices], problem.weights[valid_indices])
-        station_tp = np.minimum(station_capacity_tp, station_demands)
-        return float(station_tp.sum())
+    if score_mode == "cells":
+        return float(len(valid_indices))
 
-    # traffic (default)
-    station_loads = np.zeros(K)
-    np.add.at(station_loads, serving_idx[valid_indices], problem.weights[valid_indices])
-    return float(np.sum(np.minimum(station_loads, capacities)))
+    # traffic (default): Σ w_i for covered cells — capacity cap 없음
+    return float(np.sum(problem.weights[valid_indices]))
 
 
 def random_stations(k: int, problem: ProblemInput) -> np.ndarray:

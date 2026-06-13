@@ -81,5 +81,5 @@ def page(context: BrowserContext, dash_server: str) -> Page:
     p = context.new_page()
     p.goto(dash_server)
     p.wait_for_selector("text=시뮬레이터 제어", timeout=40_000)
-    p.wait_for_selector("text=가상 데이터 생성", timeout=20_000)
+    p.wait_for_selector("text=영역 지정", timeout=20_000)
     return p

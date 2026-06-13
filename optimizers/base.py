@@ -91,9 +91,17 @@ class ProblemInput:
     path_loss_exponent: float = 3.5           # 경로 손실 지수 n (자유공간=2, 도심=3.5)
     path_loss_ref_db: float = 38.0            # d=1m 기준 경로 손실 [dB] (~1.8 GHz)
     tx_power_dbm: float | np.ndarray = 43.0   # 기지국 송신 전력 [dBm] (배열: 기지국별 HetNet)
-    noise_floor_dbm: float = -97.0            # 잡음 바닥 [dBm] (10 MHz BW, NF 7 dB 포함)
+    noise_floor_dbm: float | np.ndarray = -97.0  # 잡음 바닥 [dBm]. 배열이면 기지국별 per-station.
     sinr_threshold_db: float = 3.0            # 커버리지 최소 SINR [dB]
     bandwidth_mhz: float = 10.0               # 시스템 대역폭 [MHz]
+
+    # ---- 간섭 모델 ----
+    # interference_threshold_dbm: 이 값 미만의 수신 전력을 갖는 기지국은 간섭원에서 제외.
+    #   물리적 근거: 잡음 바닥 이하 신호는 실질적 간섭 기여 없음. 기본값 -300 = 사실상 비활성.
+    interference_threshold_dbm: float = -300.0
+    # max_coord_stations: 서빙 기지국 포함, 스케줄링 조율로 간섭을 발생시키지 않는 기지국 수.
+    #   1 = 조율 없음(현재 동작), 6 = 1st-tier CoMP 클러스터.
+    max_coord_stations: int = 1
 
     # ---- 최적화 목표 ----
     score_mode: str = "traffic"               # "traffic" | "throughput"
@@ -113,12 +121,14 @@ class ProblemInput:
         path_loss_exponent: float = 3.5,
         path_loss_ref_db: float = 38.0,
         tx_power_dbm: float | np.ndarray = 43.0,
-        noise_floor_dbm: float = -97.0,
+        noise_floor_dbm: float | np.ndarray = -97.0,
         sinr_threshold_db: float = 3.0,
         bandwidth_mhz: float = 10.0,
         score_mode: str = "traffic",
         spectral_efficiency_mode: str = "shannon",
         weight_scale: float = 1.0,
+        interference_threshold_dbm: float = -300.0,
+        max_coord_stations: int = 1,
     ) -> "ProblemInput":
         """SyntheticEnvironment 인스턴스에서 ProblemInput 구축."""
         data = env.get_local_data()
@@ -153,6 +163,8 @@ class ProblemInput:
             score_mode=score_mode,
             spectral_efficiency_mode=spectral_efficiency_mode,
             weight_scale=weight_scale,
+            interference_threshold_dbm=interference_threshold_dbm,
+            max_coord_stations=max_coord_stations,
         )
 
 
@@ -290,11 +302,49 @@ def compute_sinr(stations: np.ndarray, problem: ProblemInput) -> np.ndarray:
 
     # 수신 전력 [W]: P_W = 10^((P_dBm − PL − 30) / 10)
     rx_w = 10.0 ** ((tx_dbm[np.newaxis, :] - pl_db - 30.0) / 10.0)    # (N, K)
-    noise_w = 10.0 ** ((problem.noise_floor_dbm - 30.0) / 10.0)
 
-    # 기지국 j가 셀 i를 서비스할 때, 나머지 기지국은 간섭원
-    total_rx = rx_w.sum(axis=1, keepdims=True)       # (N, 1)
-    interference_w = total_rx - rx_w                  # (N, K)
+    # noise_floor_dbm: 스칼라 또는 기지국별 배열(K,) → (1, K)로 브로드캐스트
+    noise_dbm = np.asarray(problem.noise_floor_dbm, dtype=float).ravel()
+    if noise_dbm.size == 1:
+        noise_w = 10.0 ** ((noise_dbm[0] - 30.0) / 10.0)
+    else:
+        if noise_dbm.size < K:
+            noise_dbm = np.concatenate([noise_dbm, np.full(K - noise_dbm.size, noise_dbm[-1])])
+        noise_w = 10.0 ** ((noise_dbm[:K][np.newaxis, :] - 30.0) / 10.0)  # (1, K)
+
+    # 간섭 모델:
+    #   1) interference_threshold_dbm 미만 수신 전력의 기지국은 간섭원 제외 (물리적 임계값)
+    #   2) 서빙 기지국 포함 max_coord_stations개까지 CoMP 조율로 간섭 제외 (스케줄링)
+    threshold_w = 10.0 ** ((problem.interference_threshold_dbm - 30.0) / 10.0)
+    n_coord = max(1, int(getattr(problem, "max_coord_stations", 1)))
+
+    # 임계값 미만 기지국은 active_rx에서 0으로 처리
+    active_rx = np.where(rx_w >= threshold_w, rx_w, 0.0)  # (N, K)
+    total_active = active_rx.sum(axis=1, keepdims=True)    # (N, 1)
+
+    if n_coord >= K:
+        interference_w = np.zeros((N, K))
+    else:
+        sorted_active = np.sort(active_rx, axis=1)[:, ::-1]  # (N, K) 내림차순
+        # 상위 n_coord 합 (서빙 BS 포함 n_coord개가 조율 대상)
+        top_nc_sum  = sorted_active[:, :n_coord  ].sum(axis=1, keepdims=True)   # (N, 1)
+        # 상위 n_coord-1 합 (서빙 BS가 상위권 밖일 때 조율 대상)
+        top_nc1_sum = sorted_active[:, :n_coord-1].sum(axis=1, keepdims=True) if n_coord > 1 else np.zeros((N, 1))
+        # n_coord번째로 강한 active 신호 (상위 여부 판별 기준)
+        nth_power = sorted_active[:, n_coord - 1:n_coord]                       # (N, 1)
+
+        # 서빙 BS j가 상위 n_coord에 포함되는지 여부
+        is_in_top = (active_rx > 0) & (active_rx >= nth_power)                  # (N, K)
+
+        # j가 상위 n_coord에 포함: interference = total - top_nc_sum (j와 n_coord-1개 이웃 조율)
+        # j가 상위권 밖:           interference = total - active_rx[j] - top_nc1_sum (j 제외 + 상위 n_coord-1 조율)
+        interference_w = np.where(
+            is_in_top,
+            total_active - top_nc_sum,
+            total_active - active_rx - top_nc1_sum,
+        )
+        interference_w = np.maximum(interference_w, 0.0)
+
     sinr = rx_w / (noise_w + interference_w + 1e-30)  # (N, K), linear
 
     return sinr

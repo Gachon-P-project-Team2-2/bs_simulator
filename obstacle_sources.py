@@ -24,6 +24,10 @@ from shapely.ops import unary_union
 _CACHE_TTL_SECONDS = 60 * 60 * 24
 _CACHE_DIR = os.path.join(os.getcwd(), ".cache", "osm_polygons")
 _OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
+_OVERPASS_HEADERS = {
+    "User-Agent": "bs-simulator/0.1",
+    "Accept": "application/json",
+}
 
 
 def _ensure_cache_dir() -> None:
@@ -285,16 +289,20 @@ def load_osm_polygons_with_cache(
     if data is None:
         query = _build_overpass_query(lat_min, lon_min, lat_max, lon_max, obstacle_types)
         payload = urllib.parse.urlencode({"data": query}).encode("utf-8")
-        request = urllib.request.Request(_OVERPASS_ENDPOINT, data=payload, method="POST")
+        request = urllib.request.Request(
+            _OVERPASS_ENDPOINT,
+            data=payload,
+            method="POST",
+            headers=_OVERPASS_HEADERS,
+        )
         try:
             with urllib.request.urlopen(request, timeout=45) as response:
                 text = response.read().decode("utf-8")
             parsed = json.loads(text)
             data = parsed
             _save_cache(cache_file, parsed)
-        except Exception:
-            # 네트워크 장애 또는 쿼리 실패 시 폴백: 빈 결과 반환
-            return [], 0
+        except Exception as exc:
+            raise RuntimeError(f"OSM 데이터를 불러오지 못했습니다: {exc}") from exc
     else:
         # 캐시 적재
         parsed = data

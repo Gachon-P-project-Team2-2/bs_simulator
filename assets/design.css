@@ -50,6 +50,7 @@
   --radius-md:   12px;
   --radius-lg:   16px;
   --radius-xl:   24px;
+  --radius-button: 6px;
   --radius-pill: 100px;   /* reserved for badges/tags only */
 
   /* Spacing */
@@ -99,6 +100,10 @@ label {
   margin:      var(--sp-sm) 0 var(--sp-xxs);
 }
 
+button {
+  border-radius: var(--radius-button) !important;
+}
+
 /* ── Primary Button ───────────────────────────────────────── */
 .primary-button {
   display:       inline-flex;
@@ -113,7 +118,7 @@ label {
   color:         var(--color-on-primary) !important;
   background:    var(--color-primary) !important;
   border:        none;
-  border-radius: var(--radius-md) !important;   /* !important: beats Dash inline sheet */
+  border-radius: var(--radius-button) !important;   /* !important: beats Dash inline sheet */
   cursor:        pointer;
   width:         100%;
   margin-top:    var(--sp-sm);
@@ -144,7 +149,7 @@ label {
   color:         var(--color-ink);
   background:    rgba(148, 151, 169, 0.08);
   border:        1px solid var(--color-hairline);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-button);
   cursor:        pointer;
   transition:    background 0.12s ease, border-color 0.12s ease;
 }
@@ -167,7 +172,7 @@ label {
   color:         var(--color-body);
   background:    var(--color-surface-strong);
   border:        1px solid var(--color-hairline);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-button);
   cursor:        pointer;
   flex-shrink:   0;
   align-self:    flex-start;
@@ -247,7 +252,7 @@ label {
   text-align:   left;
   background:   var(--color-surface-soft);
   border:       1px solid var(--color-hairline);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-button);
   padding:      8px 12px;
   cursor:       pointer;
   font-size:    13px;

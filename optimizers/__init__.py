@@ -25,6 +25,7 @@ from .metaheuristics.random_walk import RandomWalkOptimizer
 from .metaheuristics.simulated_annealing import SimulatedAnnealingOptimizer
 from .metaheuristics.tabu_search import TabuSearchOptimizer
 from .metaheuristics.genetic import GeneticAlgorithmOptimizer
+from .drl.dqn_placement import DQNPlacementOptimizer
 
 
 # 등록 순서 = UI selectbox 표시 순서
@@ -34,6 +35,7 @@ REGISTRY: list[type[Optimizer]] = [
     SimulatedAnnealingOptimizer,
     TabuSearchOptimizer,
     GeneticAlgorithmOptimizer,
+    DQNPlacementOptimizer,
 ]
 
 

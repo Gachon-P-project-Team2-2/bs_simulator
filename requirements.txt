@@ -4,6 +4,7 @@ dash-extensions>=1.0.0
 plotly>=5.20
 pandas
 numpy
+torch
 geopy
 shapely
 branca
