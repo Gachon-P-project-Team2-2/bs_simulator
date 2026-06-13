@@ -4546,7 +4546,7 @@ def start_optimization_job(
     hyperparams = _parse_hyperparams(hp_values, hp_ids, hp_defaults)
     k_list = _build_k_list(n_stations)
     prop = prop_params_base(
-        path_loss_exponent=safe_float(ui_path_loss_exp, 3.5),
+        path_loss_exponent=safe_float(ui_path_loss_exp, 3.0),
         bandwidth_mhz=safe_float(ui_bandwidth_mhz, 10.0),
         sinr_threshold_db=safe_float(ui_sinr_threshold, 3.0),
         max_coord_stations=safe_int(ui_max_coord, 1),
