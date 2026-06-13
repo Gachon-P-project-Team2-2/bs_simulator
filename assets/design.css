@@ -309,32 +309,45 @@ button {
 .main-view-switch-row {
   display: flex;
   justify-content: flex-end;
-  margin: -4px 0 var(--sp-xs);
+  margin: -1px 0 var(--sp-xs);
 }
 
 .view-switch {
   display: inline-flex;
   align-items: center;
-  gap: 0;
-  padding: 2px;
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-button);
-  background: var(--color-surface-soft);
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
-.view-switch__label {
+.view-switch .dash-options-list-option {
   position: relative;
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  min-width: 34px;
+  width: 28px;
+  min-width: 28px;
   height: 28px;
-  margin: 0;
-  border-radius: var(--radius-xs);
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-button);
+  background: var(--color-canvas);
   color: var(--color-body);
+  cursor: pointer;
+}
+
+.view-switch__label {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  margin: 0;
+  color: inherit;
   font-size: 13px;
   font-weight: 700;
-  cursor: pointer;
+  line-height: 1;
 }
 
 .view-switch__input {
@@ -343,9 +356,11 @@ button {
   pointer-events: none;
 }
 
-.view-switch__label:has(.view-switch__input:checked) {
-  color: var(--color-on-primary);
-  background: var(--color-primary);
+.view-switch .dash-options-list-option.selected {
+  color: var(--color-primary);
+  border-color: var(--color-hairline);
+  background: var(--color-canvas);
+  box-shadow: inset 0 0 0 1px var(--color-primary);
 }
 
 .analysis-view {
