@@ -120,6 +120,21 @@ def test_app_loads(page: Page):
     expect(page.get_by_role("heading", name="알고리즘")).to_be_visible()
     expect(page.get_by_role("heading", name="전파 모델")).to_be_visible()
     expect(page.get_by_role("button", name="영역 지정")).to_be_visible()
+    expect(page.locator("#main-view-mode input[value='map']")).to_be_checked()
+    expect(page.locator("#main-view-mode label").filter(has_text="2")).to_be_visible()
+
+
+def test_analysis_view_switches_from_map(page: Page):
+    """중앙 View 스위치에서 2번 분석 결과 모음으로 전환되는지."""
+    expect(page.locator("#sim-map")).to_be_visible()
+
+    page.locator("#main-view-mode label").filter(has_text="2").click()
+    expect(page.locator("#analysis-view-wrap")).to_be_visible()
+    expect(page.get_by_text("환경 데이터가 없습니다. 영역 지정 후 가상 데이터를 생성해주세요.")).to_be_visible()
+    expect(page.locator("#sim-map")).not_to_be_visible()
+
+    page.locator("#main-view-mode label").filter(has_text="1").click()
+    expect(page.locator("#sim-map")).to_be_visible()
 
 
 def test_generate_data_golden_path(page: Page):

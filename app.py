@@ -1042,6 +1042,310 @@ def _empty_stats_cards():
     ]
 
 
+def analysis_section(title: str, children: list[Any]):
+    return html.Section(
+        [
+            html.H3(title, className="analysis-section__title"),
+            *children,
+        ],
+        className="analysis-section",
+    )
+
+
+def analysis_empty(message: str):
+    return html.Div(message, className="analysis-empty")
+
+
+def compact_table(rows: list[dict[str, Any]], page_size: int = 8):
+    if not rows:
+        return analysis_empty("표시할 결과가 없습니다.")
+
+    columns = [{"name": key, "id": key} for key in rows[0].keys()]
+    return dash_table.DataTable(
+        data=rows,
+        columns=columns,
+        page_size=page_size,
+        style_table={"overflowX": "auto"},
+        style_cell={
+            "fontSize": "12px",
+            "padding": "6px 8px",
+            "whiteSpace": "normal",
+            "height": "auto",
+        },
+        style_header={"fontSize": "12px", "fontWeight": "700"},
+    )
+
+
+def format_metric_value(metric_name: str, value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            numeric = float(value)
+            if not np.isfinite(numeric):
+                return "-"
+            lowered = metric_name.lower()
+            if "pct" in lowered or "(%)" in metric_name or "커버율" in metric_name:
+                return f"{numeric:.1f}%"
+            if "sinr" in lowered or "SINR" in metric_name:
+                return f"{numeric:.1f} dB"
+            if "throughput" in lowered or "처리량" in metric_name:
+                return f"{numeric:.1f} Mbps"
+            if "traffic" in lowered or "트래픽" in metric_name or "load" in lowered or "부하" in metric_name:
+                return f"{numeric:.2f} Mbps" if abs(numeric) < 1e4 else f"{numeric:.0f}"
+            if "elapsed" in lowered or "시간" in metric_name:
+                return f"{numeric:.2f}s"
+            if "score" in lowered:
+                return f"{numeric:.2f}"
+            if numeric.is_integer():
+                return f"{int(numeric)}"
+            return f"{numeric:.3g}"
+    except Exception:
+        pass
+    return str(value)
+
+
+def environment_summary_rows(env: SyntheticEnvironment | None) -> list[dict[str, str]]:
+    if env is None:
+        return []
+
+    raw_series = env.get_raw_traffic_series()
+    dynamic_label = "동적" if raw_series is not None and raw_series.shape[0] > 1 else "정적"
+    frame_label = (
+        f"{int(getattr(env, 'dynamic_frame_index', 0)) + 1} / {int(raw_series.shape[0])}"
+        if raw_series is not None and raw_series.shape[0] > 1
+        else "-"
+    )
+
+    raw_map = _traffic_map_for_metrics(env)
+    obstacle_count = len(getattr(env, "obstacles", []) or [])
+
+    return [
+        {"항목": "영역 크기", "값": f"{env.width_km:.2f} km x {env.height_km:.2f} km"},
+        {"항목": "해상도", "값": f"{env.resolution_m:.0f} m"},
+        {"항목": "격자 수", "값": f"{env.rows} x {env.cols} ({env.rows * env.cols} cells)"},
+        {"항목": "트래픽 모드", "값": dynamic_label},
+        {"항목": "현재 프레임", "값": frame_label},
+        {"항목": "총 트래픽", "값": format_metric_value("트래픽", float(np.sum(raw_map)))},
+        {"항목": "오브젝트 수", "값": f"{obstacle_count}"},
+    ]
+
+
+def current_metrics_rows(metrics: dict[str, Any] | None) -> list[dict[str, str]]:
+    if not metrics:
+        return []
+
+    total_t = float(metrics.get("total_traffic", 0.0))
+    covered_t = float(metrics.get("covered_traffic", 0.0))
+    total_area = float(metrics.get("total_area", 0.0))
+    covered_area = float(metrics.get("covered_area", 0.0))
+    total_tp = float(metrics.get("total_throughput_mbps", 0.0))
+    total_tx_w = metrics.get("total_tx_power_w")
+    traffic_cov = (covered_t / total_t) * 100.0 if total_t > 0 else 0.0
+    area_cov = (covered_area / total_area) * 100.0 if total_area > 0 else 0.0
+    energy_eff = (total_tp / float(total_tx_w)) if total_tx_w else None
+
+    return [
+        {"항목": "총 트래픽", "값": format_metric_value("트래픽", total_t)},
+        {"항목": "커버된 트래픽", "값": f"{format_metric_value('트래픽', covered_t)} ({traffic_cov:.1f}%)"},
+        {"항목": "커버된 면적", "값": f"{int(covered_area)} cells ({area_cov:.1f}%)"},
+        {"항목": "평균 SINR", "값": format_metric_value("SINR", metrics.get("mean_sinr_db"))},
+        {"항목": "총 처리량", "값": format_metric_value("처리량", total_tp)},
+        {"항목": "기지국 수", "값": format_metric_value("count", metrics.get("n_stations"))},
+        {"항목": "에너지 효율", "값": f"{energy_eff:.3f} Mbps/W" if energy_eff is not None else "-"},
+    ]
+
+
+def dynamic_frame_figure(
+    env: SyntheticEnvironment | None,
+    opt_results: dict[str, Any] | None,
+    station_specs: list[dict[str, Any]] | None,
+) -> go.Figure:
+    fig = go.Figure()
+    series = env.get_raw_traffic_series() if env is not None else None
+    if series is None or getattr(series, "ndim", 0) != 3 or series.shape[0] <= 1:
+        fig.add_annotation(
+            text="동적 트래픽 결과가 없습니다.",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            xref="paper",
+            yref="paper",
+        )
+    else:
+        frames = list(range(int(series.shape[0])))
+        coverage_pct: list[float] = []
+        total_traffic: list[float] = []
+        max_loads: list[float] = []
+        for frame_idx in frames:
+            metrics = compute_frame_metrics(env, opt_results, station_specs, frame_index=frame_idx)
+            if metrics:
+                total = float(metrics.get("total_traffic", 0.0))
+                covered = float(metrics.get("covered_traffic", 0.0))
+                coverage_pct.append((covered / total) * 100.0 if total > 0 else 0.0)
+                total_traffic.append(total)
+                loads = np.asarray(metrics.get("station_loads", []), dtype=float)
+                max_loads.append(float(np.max(loads)) if loads.size else 0.0)
+            else:
+                frame_traffic = np.asarray(series[frame_idx], dtype=float)
+                total_traffic.append(float(np.sum(frame_traffic)))
+                coverage_pct.append(0.0)
+                max_loads.append(0.0)
+
+        fig.add_trace(go.Scatter(
+            x=frames,
+            y=coverage_pct,
+            mode="lines+markers",
+            name="트래픽 커버율(%)",
+            line={"color": "#7132f5", "width": 2},
+        ))
+        fig.add_trace(go.Scatter(
+            x=frames,
+            y=max_loads,
+            mode="lines+markers",
+            name="최대 기지국 부하",
+            yaxis="y2",
+            line={"color": "#149e61", "width": 2},
+        ))
+        current = max(0, min(int(getattr(env, "dynamic_frame_index", 0)), int(series.shape[0] - 1)))
+        fig.add_vline(x=current, line={"color": "#cf202f", "width": 1, "dash": "dot"})
+        fig.update_layout(
+            yaxis={"title": "커버율(%)", "gridcolor": "#dedee5"},
+            yaxis2={"title": "부하", "overlaying": "y", "side": "right", "showgrid": False},
+        )
+
+    fig.update_layout(
+        height=260,
+        margin={"l": 35, "r": 45, "t": 16, "b": 32},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend={"orientation": "h", "y": 1.12},
+        xaxis={"title": "Frame", "gridcolor": "#dedee5"},
+    )
+    return fig
+
+
+def station_analysis_rows(
+    opt_results: dict[str, Any] | None,
+    metrics: dict[str, Any] | None,
+    station_specs: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not opt_results:
+        return []
+
+    stations = opt_results.get("stations_geo") or []
+    prop = opt_results.get("prop_params", {})
+    fallback_tx = float(np.asarray(prop.get("tx_power_dbm", [43.0]), dtype=float).ravel()[0])
+    fallback_bw = float(prop.get("bandwidth_mhz", 10.0))
+    loads = np.asarray((metrics or {}).get("station_loads", []), dtype=float)
+    tx = coerce_station_tx_power_array(station_specs, len(stations), fallback_tx)
+    bw = coerce_station_bandwidth_array(station_specs, len(stations), fallback_bw)
+
+    rows = []
+    for i, station in enumerate(stations):
+        rows.append({
+            "기지국": i + 1,
+            "위도": round(safe_float(station.get("lat"), 0.0), 6),
+            "경도": round(safe_float(station.get("lon"), 0.0), 6),
+            "부하": format_metric_value("부하", loads[i] if i < len(loads) else 0.0),
+            "송신전력": f"{tx[i]:.0f} dBm" if i < len(tx) else "-",
+            "대역폭": f"{bw[i]:.0f} MHz" if i < len(bw) else "-",
+        })
+    return rows
+
+
+def convergence_figure(opt_results: dict[str, Any] | None) -> go.Figure:
+    fig = go.Figure()
+    history = (opt_results or {}).get("history") or []
+    xs: list[int] = []
+    ys: list[float] = []
+
+    for i, entry in enumerate(history):
+        value = None
+        if isinstance(entry, dict):
+            value = entry.get("best_score", entry.get("score", entry.get("gen_score")))
+            x_val = entry.get("iter", i)
+        else:
+            value = entry
+            x_val = i
+        try:
+            if value is not None:
+                ys.append(float(value))
+                xs.append(safe_int(x_val, i))
+        except Exception:
+            continue
+
+    if not ys and opt_results and opt_results.get("score") is not None:
+        xs = [0]
+        ys = [float(opt_results["score"])]
+
+    if ys:
+        fig.add_trace(go.Scatter(
+            x=xs,
+            y=ys,
+            mode="lines+markers",
+            line={"color": "#7132f5", "width": 2},
+            name="Score",
+        ))
+    else:
+        fig.add_annotation(
+            text="최적화 수렴 이력이 없습니다.",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            xref="paper",
+            yref="paper",
+        )
+
+    fig.update_layout(
+        height=240,
+        margin={"l": 40, "r": 15, "t": 16, "b": 32},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis={"title": "Iteration", "gridcolor": "#dedee5"},
+        yaxis={"title": "Score", "gridcolor": "#dedee5"},
+        showlegend=False,
+    )
+    return fig
+
+
+def sweep_summary_rows(results: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not results:
+        return []
+
+    sorted_results = sorted(results, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+    rows = []
+    for rank, result in enumerate(sorted_results[:10], start=1):
+        combo = ", ".join(f"{k}={v:.3g}" for k, v in (result.get("param_combo") or {}).items())
+        rows.append({
+            "순위": rank,
+            "파라미터": combo or "-",
+            "Score": format_metric_value("score", result.get("score")),
+            "커버 트래픽": format_metric_value("트래픽", result.get("covered_traffic")),
+            "커버 면적": format_metric_value("area", result.get("covered_area")),
+        })
+    return rows
+
+
+def compare_summary_rows(results: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not results:
+        return []
+
+    sorted_results = sorted(results, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+    rows = []
+    for rank, result in enumerate(sorted_results, start=1):
+        rows.append({
+            "순위": rank,
+            "알고리즘": result.get("algo", "-"),
+            "Score": format_metric_value("score", result.get("score")),
+            "커버율": format_metric_value("coverage_pct", result.get("coverage_pct")),
+            "처리량": format_metric_value("처리량", result.get("total_throughput_mbps")),
+            "SINR": format_metric_value("SINR", result.get("mean_sinr_db")),
+            "시간": format_metric_value("elapsed", result.get("elapsed_sec")),
+        })
+    return rows
+
+
 def _section(title: str, children: list):
     items = ([html.H3(title, className="section-header")] if title else [])
     return html.Div(items + children, style={"marginBottom": "20px"})
@@ -1661,6 +1965,22 @@ def serve_layout():
                             ),
 
                             html.Div(
+                                dcc.RadioItems(
+                                    id="main-view-mode",
+                                    options=[
+                                        {"label": "1", "value": "map"},
+                                        {"label": "2", "value": "analysis"},
+                                    ],
+                                    value="map",
+                                    inline=True,
+                                    className="view-switch",
+                                    inputClassName="view-switch__input",
+                                    labelClassName="view-switch__label",
+                                ),
+                                className="main-view-switch-row",
+                            ),
+
+                            html.Div(
                                 [
                                     *_empty_stats_cards(),
                                 ],
@@ -1675,150 +1995,165 @@ def serve_layout():
 
                             html.Div(
                                 [
-                                    dl.Map(
-                                        id="sim-map",
-                                        center=DEFAULT_CENTER,
-                                        zoom=DEFAULT_ZOOM,
-                                        bounds=None,
-                                        children=[
-                                            dl.TileLayer(
-                                                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-                                                attribution="&copy; OpenStreetMap contributors &copy; CARTO",
-                                            ),
-                                            dl.LayerGroup(id="overlay-layers", children=[]),
-                                            dl.LayerGroup(id="station-layer", children=[]),
-                                            dl.FeatureGroup(
-                                                id="region-draw-feature-group",
-                                                children=[
-                                                    dl.EditControl(
-                                                        id="region-edit-control",
-                                                        draw={
-                                                            "rectangle": {},
-                                                            "polyline": False,
-                                                            "polygon": False,
-                                                            "circle": False,
-                                                            "marker": False,
-                                                            "circlemarker": False,
+                                    html.Div(
+                                        [
+                                            html.Div(
+                                                [
+                                                    dl.Map(
+                                                        id="sim-map",
+                                                        center=DEFAULT_CENTER,
+                                                        zoom=DEFAULT_ZOOM,
+                                                        bounds=None,
+                                                        children=[
+                                                            dl.TileLayer(
+                                                                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+                                                                attribution="&copy; OpenStreetMap contributors &copy; CARTO",
+                                                            ),
+                                                            dl.LayerGroup(id="overlay-layers", children=[]),
+                                                            dl.LayerGroup(id="station-layer", children=[]),
+                                                            dl.FeatureGroup(
+                                                                id="region-draw-feature-group",
+                                                                children=[
+                                                                    dl.EditControl(
+                                                                        id="region-edit-control",
+                                                                        draw={
+                                                                            "rectangle": {},
+                                                                            "polyline": False,
+                                                                            "polygon": False,
+                                                                            "circle": False,
+                                                                            "marker": False,
+                                                                            "circlemarker": False,
+                                                                        },
+                                                                        edit={"edit": False},
+                                                                        position="topleft",
+                                                                    )
+                                                                ],
+                                                            ),
+                                                        ],
+                                                        style={
+                                                            "width": "100%",
+                                                            "height": "720px",
+                                                            "borderRadius": "8px",
                                                         },
-                                                        edit={"edit": False},
-                                                        position="topleft",
-                                                    )
+                                                    ),
+                                                    html.Div(
+                                                        id="range-panel",
+                                                        style={
+                                                            "position": "absolute",
+                                                            "top": "8px",
+                                                            "right": "8px",
+                                                            "zIndex": "1000",
+                                                            "pointerEvents": "auto",
+                                                        },
+                                                    ),
                                                 ],
+                                                style={"position": "relative"},
+                                            ),
+
+                                            html.Div(
+                                                [
+                                                    html.Div(
+                                                        id="traffic-frame-label",
+                                                        className="history-panel__label",
+                                                    ),
+
+                                                    dcc.Slider(
+                                                        id="traffic-frame-slider",
+                                                        min=0,
+                                                        max=1,
+                                                        step=1,
+                                                        value=0,
+                                                        marks=None,
+                                                        tooltip={"placement": "bottom"},
+                                                    ),
+
+                                                    html.Div(
+                                                        [
+                                                            html.Button(
+                                                                "▶ 재생",
+                                                                id="traffic-play-btn",
+                                                                n_clicks=0,
+                                                                className="secondary-button",
+                                                                style={"marginRight": "6px"},
+                                                            ),
+                                                            html.Button(
+                                                                "⏭ 초기화",
+                                                                id="traffic-reset-btn",
+                                                                n_clicks=0,
+                                                                className="secondary-button",
+                                                            ),
+                                                        ],
+                                                        style={"marginTop": "8px"},
+                                                    ),
+
+                                                    dcc.Interval(
+                                                        id="traffic-frame-interval",
+                                                        interval=500,
+                                                        disabled=True,
+                                                        n_intervals=0,
+                                                    ),
+                                                ],
+                                                id="dynamic-frame-wrap",
+                                                className="history-panel",
+                                                style={"display": "none"},
+                                            ),
+
+                                            html.Div(id="run-status", style={"margin": "12px 0", "fontSize": "13px"}),
+
+                                            html.Div(
+                                                [
+                                                    html.Div(
+                                                        id="algo-history-label",
+                                                        className="history-panel__label",
+                                                    ),
+                                                    dcc.Slider(
+                                                        id="algo-history-slider",
+                                                        min=0,
+                                                        max=1,
+                                                        step=1,
+                                                        value=0,
+                                                        marks=None,
+                                                        tooltip={"placement": "bottom"},
+                                                    ),
+                                                    html.Div(
+                                                        [
+                                                            html.Button(
+                                                                "▶ 재생",
+                                                                id="algo-play-btn",
+                                                                n_clicks=0,
+                                                                className="secondary-button",
+                                                                style={"marginRight": "6px"},
+                                                            ),
+                                                            html.Button(
+                                                                "⏭ 초기화",
+                                                                id="algo-reset-btn",
+                                                                n_clicks=0,
+                                                                className="secondary-button",
+                                                            ),
+                                                        ],
+                                                        style={"marginTop": "8px"},
+                                                    ),
+                                                    dcc.Interval(
+                                                        id="algo-frame-interval",
+                                                        interval=300,
+                                                        disabled=True,
+                                                        n_intervals=0,
+                                                    ),
+                                                ],
+                                                id="algo-history-wrap",
+                                                className="history-panel",
+                                                style={"display": "none"},
                                             ),
                                         ],
-                                        style={
-                                            "width": "100%",
-                                            "height": "720px",
-                                            "borderRadius": "8px",
-                                        },
+                                        id="map-view-wrap",
                                     ),
+
                                     html.Div(
-                                        id="range-panel",
-                                        style={
-                                            "position": "absolute",
-                                            "top": "8px",
-                                            "right": "8px",
-                                            "zIndex": "1000",
-                                            "pointerEvents": "auto",
-                                        },
+                                        id="analysis-view-wrap",
+                                        className="analysis-view",
+                                        style={"display": "none"},
                                     ),
                                 ],
-                                style={"position": "relative"},
-                            ),
-
-                            html.Div(
-                                [
-                                    html.Div(
-                                        id="traffic-frame-label",
-                                        className="history-panel__label",
-                                    ),
-
-                                    dcc.Slider(
-                                        id="traffic-frame-slider",
-                                        min=0,
-                                        max=1,
-                                        step=1,
-                                        value=0,
-                                        marks=None,
-                                        tooltip={"placement": "bottom"},
-                                    ),
-
-                                    html.Div(
-                                        [
-                                            html.Button(
-                                                "▶ 재생",
-                                                id="traffic-play-btn",
-                                                n_clicks=0,
-                                                className="secondary-button",
-                                                style={"marginRight": "6px"},
-                                            ),
-                                            html.Button(
-                                                "⏭ 초기화",
-                                                id="traffic-reset-btn",
-                                                n_clicks=0,
-                                                className="secondary-button",
-                                            ),
-                                        ],
-                                        style={"marginTop": "8px"},
-                                    ),
-
-                                    dcc.Interval(
-                                        id="traffic-frame-interval",
-                                        interval=500,
-                                        disabled=True,
-                                        n_intervals=0,
-                                    ),
-                                ],
-                                id="dynamic-frame-wrap",
-                                className="history-panel",
-                                style={"display": "none"},
-                            ),
-
-                            html.Div(id="run-status", style={"margin": "12px 0", "fontSize": "13px"}),
-
-                            html.Div(
-                                [
-                                    html.Div(
-                                        id="algo-history-label",
-                                        className="history-panel__label",
-                                    ),
-                                    dcc.Slider(
-                                        id="algo-history-slider",
-                                        min=0,
-                                        max=1,
-                                        step=1,
-                                        value=0,
-                                        marks=None,
-                                        tooltip={"placement": "bottom"},
-                                    ),
-                                    html.Div(
-                                        [
-                                            html.Button(
-                                                "▶ 재생",
-                                                id="algo-play-btn",
-                                                n_clicks=0,
-                                                className="secondary-button",
-                                                style={"marginRight": "6px"},
-                                            ),
-                                            html.Button(
-                                                "⏭ 초기화",
-                                                id="algo-reset-btn",
-                                                n_clicks=0,
-                                                className="secondary-button",
-                                            ),
-                                        ],
-                                        style={"marginTop": "8px"},
-                                    ),
-                                    dcc.Interval(
-                                        id="algo-frame-interval",
-                                        interval=300,
-                                        disabled=True,
-                                        n_intervals=0,
-                                    ),
-                                ],
-                                id="algo-history-wrap",
-                                className="history-panel",
-                                style={"display": "none"},
                             ),
                         ],
                         style={"flex": "1", "padding": "18px", "minWidth": 0},
@@ -2139,6 +2474,127 @@ app.index_string = """
     </body>
 </html>
 """
+
+
+@app.callback(
+    Output("map-view-wrap", "style"),
+    Output("analysis-view-wrap", "style"),
+    Input("main-view-mode", "value"),
+)
+def toggle_main_view(view_mode):
+    if view_mode == "analysis":
+        return {"display": "none"}, {"display": "block"}
+    return {"display": "block"}, {"display": "none"}
+
+
+@app.callback(
+    Output("analysis-view-wrap", "children"),
+    Input("main-view-mode", "value"),
+    Input("env-meta", "data"),
+    Input("opt-meta", "data"),
+    Input("range-meta", "data"),
+    Input("sweep-meta", "data"),
+    Input("algo-compare-meta", "data"),
+    Input("station-specs-store", "data"),
+    State("session-id", "data"),
+)
+def render_analysis_view(
+    view_mode,
+    env_meta,
+    opt_meta,
+    range_meta,
+    sweep_meta,
+    algo_compare_meta,
+    station_specs,
+    session_id,
+):
+    if view_mode != "analysis":
+        return []
+
+    state = get_session_state(session_id)
+    env = state.get("env")
+    opt_results = state.get("opt_results")
+    metrics = compute_frame_metrics(env, opt_results, station_specs) or state.get("opt_stats")
+    dynamic_summary = compute_dynamic_scenario_summary(env, opt_results, station_specs)
+    range_results = state.get("range_results") or []
+    sweep_results = state.get("sweep_results") or []
+    compare_results = state.get("algo_compare_results") or []
+
+    environment_children = (
+        [compact_table(environment_summary_rows(env), page_size=7)]
+        if env is not None
+        else [analysis_empty("환경 데이터가 없습니다. 영역 지정 후 가상 데이터를 생성해주세요.")]
+    )
+
+    metric_children = (
+        [compact_table(current_metrics_rows(metrics), page_size=7)]
+        if metrics
+        else [analysis_empty("계산 실행 후 현재 프레임 성능이 표시됩니다.")]
+    )
+
+    dynamic_children: list[Any] = []
+    if dynamic_summary:
+        dynamic_children.append(compact_table([
+            {"항목": "현재 프레임", "값": f"{dynamic_summary['current_frame']} / {dynamic_summary['max_frame']}"},
+            {"항목": "평균 커버율", "값": f"{dynamic_summary['avg_traffic_coverage_pct']:.1f}%"},
+            {"항목": "최악 커버율", "값": f"{dynamic_summary['worst_traffic_coverage_pct']:.1f}%"},
+            {"항목": "최대 부하", "값": format_metric_value("부하", dynamic_summary["max_station_load"])},
+        ], page_size=4))
+        dynamic_children.append(dcc.Graph(
+            figure=dynamic_frame_figure(env, opt_results, station_specs),
+            config={"displayModeBar": False},
+        ))
+    else:
+        dynamic_children.append(analysis_empty("동적 트래픽 시나리오 결과가 없습니다."))
+
+    optimization_children: list[Any] = []
+    if opt_results:
+        optimization_children.append(compact_table([
+            {"항목": "알고리즘", "값": opt_results.get("algo", "-")},
+            {"항목": "Score", "값": format_metric_value("score", opt_results.get("score"))},
+            {"항목": "평가 모드", "값": opt_results.get("score_mode", "-")},
+            {"항목": "스펙트럼 효율", "값": opt_results.get("spectral_efficiency_mode", "-")},
+            {"항목": "k 후보 결과", "값": f"{len(range_results)}개" if range_results else "-"},
+        ], page_size=5))
+        optimization_children.append(dcc.Graph(
+            figure=convergence_figure(opt_results),
+            config={"displayModeBar": False},
+        ))
+    else:
+        optimization_children.append(analysis_empty("최적화 결과가 없습니다. 계산 실행 후 표시됩니다."))
+
+    station_children = (
+        [compact_table(station_analysis_rows(opt_results, metrics, station_specs), page_size=10)]
+        if opt_results
+        else [analysis_empty("기지국 결과가 없습니다.")]
+    )
+
+    sweep_children = (
+        [compact_table(sweep_summary_rows(sweep_results), page_size=10)]
+        if sweep_results
+        else [analysis_empty("Sweep 실행 결과가 없습니다.")]
+    )
+
+    compare_children = (
+        [compact_table(compare_summary_rows(compare_results), page_size=10)]
+        if compare_results
+        else [analysis_empty("알고리즘 비교 결과가 없습니다.")]
+    )
+
+    return [
+        html.Div(
+            [
+                analysis_section("환경 요약", environment_children),
+                analysis_section("현재 프레임 성능", metric_children),
+                analysis_section("동적 트래픽 시나리오", dynamic_children),
+                analysis_section("최적화 결과", optimization_children),
+                analysis_section("기지국별 분석", station_children),
+                analysis_section("Sweep 결과", sweep_children),
+                analysis_section("알고리즘 비교", compare_children),
+            ],
+            className="analysis-grid",
+        )
+    ]
 
 
 @app.callback(
