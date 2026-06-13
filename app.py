@@ -42,7 +42,7 @@ import dash_leaflet as dl
 from dash_extensions.javascript import assign
 from geopy.distance import geodesic
 
-from environment import SyntheticEnvironment
+from environment import SyntheticEnvironment, TIME_PROFILES
 from obstacle_sources import (
     filter_polygons,
     geojson_to_polygons,
@@ -52,6 +52,7 @@ from optimizers import (
     REGISTRY,
     ProblemInput,
     capacity_from_bandwidth,
+    compute_metrics,
     convert_to_geo,
     get_optimizer,
     sinr_coverage,
@@ -108,6 +109,12 @@ OSM_OBSTACLE_TYPE_VALUES = {
     "도로": "road",
 }
 OSM_OBJECT_USAGE_MODES = ["장애물로 사용"]
+DEFAULT_DYNAMIC_TRAFFIC_TYPE = "moving_hotspot"
+DYNAMIC_TRAFFIC_TYPE_OPTIONS = [
+    {"label": "고정 위치 변동", "value": "fixed_variation"},
+    {"label": "이동형 핫스팟", "value": "moving_hotspot"},
+    {"label": "위치 전환형", "value": "switching_locations"},
+]
 
 APP_STATE: dict[str, dict[str, Any]] = {}
 _LAST_ACCESSED: dict[str, float] = {}
@@ -599,6 +606,142 @@ def compute_status_overlay(
     return grid_status, overlay_loads, sinr_per_cell
 
 
+def _traffic_map_for_metrics(env: SyntheticEnvironment, frame_index: int | None = None) -> np.ndarray:
+    raw_series = env.get_raw_traffic_series()
+    if raw_series is not None:
+        max_frame = int(raw_series.shape[0] - 1)
+        idx = max(0, min(safe_int(frame_index, env.dynamic_frame_index), max_frame))
+        traffic = np.array(raw_series[idx], copy=True, dtype=float)
+    else:
+        traffic = np.array(env.get_raw_traffic_map(), copy=True, dtype=float)
+
+    obstacle_mask = env.get_obstacle_mask()
+    if obstacle_mask.shape == traffic.shape:
+        traffic[obstacle_mask] = 0.0
+
+    profile = TIME_PROFILES.get(getattr(env, "time_profile", "flat"), TIME_PROFILES["flat"])
+    hour = max(0, min(23, int(getattr(env, "time_hour", 12))))
+    time_scale = float(profile[hour])
+    if time_scale != 1.0:
+        traffic *= time_scale
+
+    return traffic
+
+
+def _stations_geo_to_local(env: SyntheticEnvironment, stations_geo: Any) -> np.ndarray | None:
+    station_df = pd.DataFrame(stations_geo or [])
+    if station_df.empty or not {"lat", "lon"}.issubset(station_df.columns):
+        return None
+
+    x_scale = env.width_m / max(env.lon_max - env.lon_min, 1e-12)
+    y_scale = env.height_m / max(env.lat_max - env.lat_min, 1e-12)
+
+    st_x = (station_df["lon"].to_numpy(dtype=float) - env.lon_min) * x_scale
+    st_y = (station_df["lat"].to_numpy(dtype=float) - env.lat_min) * y_scale
+    return np.column_stack((st_x, st_y))
+
+
+def compute_frame_metrics(
+    env: SyntheticEnvironment | None,
+    opt_results: dict[str, Any] | None,
+    station_specs: list[dict[str, Any]] | None,
+    frame_index: int | None = None,
+) -> dict[str, Any] | None:
+    if env is None or not opt_results:
+        return None
+
+    stations_local = _stations_geo_to_local(env, opt_results.get("stations_geo"))
+    if stations_local is None or len(stations_local) == 0:
+        return None
+
+    prop = opt_results.get("prop_params", {})
+    k = len(stations_local)
+    fallback_tx = float(np.asarray(prop.get("tx_power_dbm", [43.0]), dtype=float).ravel()[0])
+    tx = coerce_station_tx_power_array(station_specs, k, fallback_tx)
+    fallback_bw = float(prop.get("bandwidth_mhz", 10.0))
+    bw = coerce_station_bandwidth_array(station_specs, k, fallback_bw)
+    noise_floor_per_station = -174.0 + 10.0 * np.log10(np.maximum(bw, 0.001) * 1e6) + 7.0
+
+    prop_for_radius = {
+        "path_loss_ref_db": float(prop.get("path_loss_ref_db", 38.0)),
+        "noise_floor_dbm": noise_floor_per_station,
+        "sinr_threshold_db": float(prop.get("sinr_threshold_db", 3.0)),
+        "path_loss_exponent": float(prop.get("path_loss_exponent", 3.5)),
+        "bandwidth_mhz": fallback_bw,
+    }
+
+    traffic = _traffic_map_for_metrics(env, frame_index)
+    mask = traffic.ravel() > 0
+    x_vals = env.x_grid.ravel()[mask]
+    y_vals = env.y_grid.ravel()[mask]
+    weight_scale = float(opt_results.get("weight_scale", 1.0))
+    weights = traffic.ravel()[mask] * weight_scale
+
+    problem = ProblemInput(
+        X=np.column_stack((x_vals, y_vals)) if len(weights) > 0 else np.empty((0, 2)),
+        weights=weights,
+        width_m=env.width_m,
+        height_m=env.height_m,
+        radius_m=radius_from_tx(tx, prop_for_radius),
+        capacity=np.full(k, 1e10),
+        lat_min=env.lat_min,
+        lat_max=env.lat_max,
+        lon_min=env.lon_min,
+        lon_max=env.lon_max,
+        path_loss_exponent=prop_for_radius["path_loss_exponent"],
+        path_loss_ref_db=prop_for_radius["path_loss_ref_db"],
+        tx_power_dbm=tx,
+        noise_floor_dbm=noise_floor_per_station,
+        sinr_threshold_db=prop_for_radius["sinr_threshold_db"],
+        bandwidth_mhz=float(prop.get("bandwidth_mhz", fallback_bw)),
+        score_mode=opt_results.get("score_mode", "traffic"),
+        spectral_efficiency_mode=opt_results.get("spectral_efficiency_mode", "shannon"),
+        weight_scale=weight_scale,
+        interference_threshold_dbm=float(prop.get("noise_floor_dbm", -97.0)),
+        max_coord_stations=int(prop.get("max_coord_stations", 1)),
+    )
+
+    metrics = dict(compute_metrics(stations_local, problem))
+    metrics["n_stations"] = k
+    metrics["total_tx_power_w"] = float(np.sum(10 ** ((tx - 30) / 10)))
+    return metrics
+
+
+def compute_dynamic_scenario_summary(
+    env: SyntheticEnvironment | None,
+    opt_results: dict[str, Any] | None,
+    station_specs: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    series = env.get_raw_traffic_series() if env is not None else None
+    if series is None or getattr(series, "ndim", 0) != 3 or series.shape[0] <= 1:
+        return None
+
+    traffic_coverage_pct = []
+    max_station_load = 0.0
+    for frame_idx in range(int(series.shape[0])):
+        metrics = compute_frame_metrics(env, opt_results, station_specs, frame_index=frame_idx)
+        if not metrics:
+            continue
+        total = float(metrics.get("total_traffic", 0.0))
+        covered = float(metrics.get("covered_traffic", 0.0))
+        traffic_coverage_pct.append((covered / total) * 100.0 if total > 0 else 0.0)
+        loads = np.asarray(metrics.get("station_loads", []), dtype=float)
+        if loads.size:
+            max_station_load = max(max_station_load, float(np.max(loads)))
+
+    if not traffic_coverage_pct:
+        return None
+
+    current = max(0, min(int(getattr(env, "dynamic_frame_index", 0)), int(series.shape[0] - 1)))
+    return {
+        "current_frame": current,
+        "max_frame": int(series.shape[0] - 1),
+        "avg_traffic_coverage_pct": float(np.mean(traffic_coverage_pct)),
+        "worst_traffic_coverage_pct": float(np.min(traffic_coverage_pct)),
+        "max_station_load": max_station_load,
+    }
+
+
 def build_traffic_geojson(
     env: SyntheticEnvironment,
     df: pd.DataFrame,
@@ -704,7 +847,10 @@ def build_station_popup(
 
                     html.Hr(style={"margin": "8px 0"}),
 
-                    html.Div(f"Load: {load:.1f}"),
+                    html.Div(
+                        f"Load: {load:.1f}",
+                        id={"type": "station-popup-load", "index": station_idx},
+                    ),
                     html.Div(f"Tx Power: {tx_power:.1f} dBm"),
                     html.Div(f"예상 커버 반경: {radius_m:.0f} m (시각화 전용)"),
 
@@ -939,6 +1085,21 @@ def sidebar_layout():
                             html.H3("트래픽 세부 설정", className="section-header",
                                     style={"marginTop": "16px"}),
 
+                            html.Label(
+                                [
+                                    html.Span("동적 트래픽 모드", className="dynamic-traffic-toggle__text"),
+                                    dcc.Checklist(
+                                        id="dynamic-traffic",
+                                        options=[{"label": "", "value": "on"}],
+                                        value=[],
+                                        className="dynamic-traffic-toggle__control",
+                                        inputClassName="dynamic-traffic-toggle__input",
+                                        labelClassName="dynamic-traffic-toggle__label",
+                                    ),
+                                ],
+                                className="dynamic-traffic-toggle",
+                            ),
+
                             html.Label("트래픽 패턴"),
                             dcc.Dropdown(
                                 id="traffic-pattern",
@@ -991,16 +1152,17 @@ def sidebar_layout():
                                 id="multi-hotspot-controls",
                             ),
 
-                            dcc.Checklist(
-                                id="dynamic-traffic",
-                                options=[{"label": "동적 트래픽 생성", "value": "on"}],
-                                value=[],
-                                style={"marginTop": "8px"},
-                            ),
-
                             html.Div(
                                 [
-                                    html.Label("시간 단계 수"),
+                                    html.Label("동적 트래픽 유형"),
+                                    dcc.Dropdown(
+                                        id="dynamic-traffic-type",
+                                        options=DYNAMIC_TRAFFIC_TYPE_OPTIONS,
+                                        value=DEFAULT_DYNAMIC_TRAFFIC_TYPE,
+                                        clearable=False,
+                                    ),
+
+                                    html.Label("프레임 수"),
                                     dcc.Slider(
                                         id="dynamic-time-steps",
                                         min=2,
@@ -1037,6 +1199,8 @@ def sidebar_layout():
 
                     html.Div(
                         [
+                            html.H3("오브젝트 세부 설정", className="section-header",
+                                    style={"marginTop": "16px"}),
 
                             html.Label("오브젝트 소스"),
                             dcc.Dropdown(
@@ -2190,6 +2354,7 @@ def sync_sliders_to_store(tx_vals, bw_vals, tx_ids):
     State("base-intensity", "value"),
     State("max-intensity", "value"),
     State("dynamic-traffic", "value"),
+    State("dynamic-traffic-type", "value"),
     State("num-hotspots", "value"),
     State("spread-m", "value"),
     State("dynamic-time-steps", "value"),
@@ -2218,6 +2383,7 @@ def create_environment(
     base_intensity,
     max_intensity,
     dynamic_traffic,
+    dynamic_traffic_type,
     num_hotspots,
     spread_m,
     dynamic_time_steps,
@@ -2281,6 +2447,7 @@ def create_environment(
                 time_steps=safe_int(dynamic_time_steps, 12),
                 variation=safe_float(dynamic_variation, 0.25),
                 drift_m=safe_float(dynamic_drift_m, 300.0),
+                dynamic_type=dynamic_traffic_type or DEFAULT_DYNAMIC_TRAFFIC_TYPE,
                 params=pattern_params,
             )
 
@@ -2607,12 +2774,43 @@ def update_station_markers(opt_meta, selected_station_idx, algo_history, history
     opt_stats = state.get("opt_stats")
     if not opt_results or not opt_stats:
         return []
-    overlay_loads = state.get("station_overlay_loads", np.zeros(0))
+    frame_stats = compute_frame_metrics(state.get("env"), opt_results, station_specs)
+    overlay_loads = (
+        np.asarray(frame_stats.get("station_loads"), dtype=float)
+        if frame_stats and frame_stats.get("station_loads") is not None
+        else state.get("station_overlay_loads", np.zeros(0))
+    )
     return build_station_markers(
         opt_results, opt_stats, station_specs,
         selected_station_idx if isinstance(selected_station_idx, int) else None,
         overlay_loads,
     )
+
+
+@app.callback(
+    Output({"type": "station-popup-load", "index": ALL}, "children"),
+    Input("env-meta", "data"),
+    Input("station-specs-store", "data"),
+    State({"type": "station-popup-load", "index": ALL}, "id"),
+    State("session-id", "data"),
+)
+def update_station_popup_loads(env_meta, station_specs, load_ids, session_id):
+    if not load_ids:
+        raise PreventUpdate
+
+    state = get_session_state(session_id)
+    opt_results = state.get("opt_results")
+    metrics = compute_frame_metrics(state.get("env"), opt_results, station_specs)
+    if not metrics:
+        return [no_update for _ in load_ids]
+
+    loads = np.asarray(metrics.get("station_loads", []), dtype=float)
+    values = []
+    for id_obj in load_ids:
+        idx = safe_int(id_obj.get("index") if isinstance(id_obj, dict) else None, -1)
+        load = float(loads[idx]) if 0 <= idx < len(loads) else 0.0
+        values.append(f"Load: {load:.1f}")
+    return values
 
 
 @app.callback(
@@ -2755,6 +2953,9 @@ def _run_optimization_thread(
                     "stations_geo": stations_df.to_dict("records"),
                     "history": result.history,
                     "prop_params": {**prop, "tx_power_dbm": tx_k.tolist()},
+                    "score_mode": score_mode,
+                    "spectral_efficiency_mode": spectral_efficiency_mode,
+                    "weight_scale": weight_scale,
                 },
                 "stats": stats_out,
             }
@@ -2977,14 +3178,21 @@ def poll_optimization_progress(n_intervals, session_id):
 @app.callback(
     Output("stats-panel", "children"),
     Input("opt-meta", "data"),
+    Input("env-meta", "data"),
+    Input("station-specs-store", "data"),
     State("session-id", "data"),
 )
-def render_stats_panel(opt_meta, session_id):
+def render_stats_panel(opt_meta, env_meta, station_specs, session_id):
     state = get_session_state(session_id)
-    stats = state.get("opt_stats")
+    env = state.get("env")
+    opt_results = state.get("opt_results")
+    base_stats = state.get("opt_stats")
+    stats = compute_frame_metrics(env, opt_results, station_specs) or base_stats
 
     if not stats:
         return _empty_stats_cards()
+
+    summary = compute_dynamic_scenario_summary(env, opt_results, station_specs)
 
     total_t = float(stats.get("total_traffic", 0))
     cov_t = float(stats.get("covered_traffic", 0))
@@ -3007,7 +3215,9 @@ def render_stats_panel(opt_meta, session_id):
     # 트래픽이 Mbps 단위면 소수, 추상 단위면 정수로 표시
     t_fmt = (lambda v: f"{v:.2f} Mbps") if total_t < 1e4 else (lambda v: f"{int(v)}")
 
-    return [
+    cards = []
+
+    cards.extend([
         metric_card("총 트래픽", t_fmt(total_t)),
         metric_card("커버된 트래픽", f"{t_fmt(cov_t)} ({traffic_cov_pct:.1f}%)"),
         metric_card("커버된 면적", f"{int(cov_a)} 격자 ({area_cov_pct:.1f}%)"),
@@ -3015,7 +3225,16 @@ def render_stats_panel(opt_meta, session_id):
         metric_card("총 처리량", f"{total_tp:.1f} Mbps"),
         metric_card("기지국 수", f"{stats.get('n_stations', '-')}"),
         metric_card("에너지 효율", energy_eff_str),
-    ]
+    ])
+
+    if summary:
+        cards.extend([
+            metric_card("평균 커버율", f"{summary['avg_traffic_coverage_pct']:.1f}%"),
+            metric_card("최악 커버율", f"{summary['worst_traffic_coverage_pct']:.1f}%"),
+            metric_card("최대 부하", t_fmt(float(summary["max_station_load"]))),
+        ])
+
+    return cards
 
 
 @app.callback(

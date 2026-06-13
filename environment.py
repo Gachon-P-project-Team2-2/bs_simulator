@@ -212,6 +212,7 @@ class SyntheticEnvironment:
         time_steps: int = 12,
         variation: float = 0.25,
         drift_m: float = 300.0,
+        dynamic_type: str = "moving_hotspot",
         params: dict | None = None,
     ):
         """면적 밀도 기반 동적 트래픽 생성."""
@@ -224,15 +225,20 @@ class SyntheticEnvironment:
             base_intensity=cell_peak_mbps * 0.1,
             variation=variation,
             drift_m=drift_m,
+            dynamic_type=dynamic_type,
             params=params,
         )
 
     def generate_dynamic_traffic_pattern(self, pattern: str, time_steps=12, max_intensity: float = 100.0,
                                         base_intensity: float = 10.0, variation: float = 0.25,
-                                        drift_m: float = 300.0, params: dict | None = None):
+                                        drift_m: float = 300.0, dynamic_type: str = "moving_hotspot",
+                                        params: dict | None = None):
         """시간축 트래픽 생성기.
 
-        패턴/강도/노이즈를 프레임마다 변조해 시계열 트래픽 맵을 만든다.
+        dynamic_type:
+          - fixed_variation: 같은 공간 분포의 강도만 시간에 따라 변동
+          - moving_hotspot: 분포 위치가 시간에 따라 이동
+          - switching_locations: 서로 다른 위치의 분포가 나타났다 사라짐
         """
         from patterns import generate_pattern
 
@@ -240,7 +246,71 @@ class SyntheticEnvironment:
         time_steps = max(1, int(time_steps))
         variation = float(variation)
         drift_cells = max(0.0, drift_m / max(float(self.resolution_m), 1.0))
+        dynamic_type = str(dynamic_type or "moving_hotspot")
+        if dynamic_type not in {"fixed_variation", "moving_hotspot", "switching_locations"}:
+            dynamic_type = "moving_hotspot"
         rng = np.random.default_rng()
+
+        if dynamic_type == "fixed_variation":
+            base_norm = generate_pattern(
+                self.rows,
+                self.cols,
+                pattern=pattern,
+                rng=np.random.default_rng(int(rng.integers(0, 2**31 - 1))),
+                params=params,
+            )
+            frames = []
+            for step in range(time_steps):
+                phase = step / max(1, time_steps - 1)
+                factor = 1.0 + variation * math.sin(2.0 * np.pi * phase)
+                frame_norm = np.clip(base_norm * factor, 0.0, 1.0)
+                frame = base_intensity + frame_norm * max_intensity
+                frames.append(frame.astype(float))
+
+            self._raw_traffic_series = np.stack(frames, axis=0)
+            self.traffic_series = self._raw_traffic_series.copy()
+            self._raw_traffic_map = self._raw_traffic_series[0].copy()
+            self.traffic_map = self._raw_traffic_map.copy()
+            self.dynamic_frame_index = 0
+            self.remask_traffic()
+            return self.traffic_series
+
+        if dynamic_type == "switching_locations":
+            variant_count = max(1, min(4, time_steps))
+            variants = []
+            for _ in range(variant_count):
+                variant = generate_pattern(
+                    self.rows,
+                    self.cols,
+                    pattern=pattern,
+                    rng=np.random.default_rng(int(rng.integers(0, 2**31 - 1))),
+                    params=params,
+                )
+                shift_y = int(rng.integers(0, max(1, self.rows)))
+                shift_x = int(rng.integers(0, max(1, self.cols)))
+                variants.append(np.roll(np.roll(variant, shift_y, axis=0), shift_x, axis=1))
+
+            frames = []
+            switch_strength = min(1.0, max(0.0, variation * 2.0))
+            low_factor = 1.0 - switch_strength
+            for step in range(time_steps):
+                phase = step / max(1, time_steps - 1)
+                active_idx = min(variant_count - 1, int(phase * variant_count))
+                segment_start = active_idx / variant_count
+                segment_end = (active_idx + 1) / variant_count
+                segment_phase = (phase - segment_start) / max(segment_end - segment_start, 1e-9)
+                pulse = max(0.0, math.sin(np.pi * segment_phase))
+                frame_norm = np.clip(variants[active_idx] * (low_factor + switch_strength * pulse), 0.0, 1.0)
+                frame = base_intensity + frame_norm * max_intensity
+                frames.append(frame.astype(float))
+
+            self._raw_traffic_series = np.stack(frames, axis=0)
+            self.traffic_series = self._raw_traffic_series.copy()
+            self._raw_traffic_map = self._raw_traffic_series[0].copy()
+            self.traffic_map = self._raw_traffic_map.copy()
+            self.dynamic_frame_index = 0
+            self.remask_traffic()
+            return self.traffic_series
 
         centers = None
         directions = None

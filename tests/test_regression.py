@@ -36,11 +36,12 @@ def _define_region(page: Page) -> None:
     page.get_by_role("button", name="영역 지정").click()
 
     draw_btn = page.locator(".leaflet-draw-draw-rectangle")
-    expect(draw_btn).to_be_visible()
+    draw_btn.wait_for(state="attached", timeout=10_000)
     try:
         page.wait_for_selector(".leaflet-draw-actions:visible", timeout=2_000)
     except PlaywrightTimeoutError:
-        draw_btn.click()
+        if draw_btn.is_visible():
+            draw_btn.click()
 
     box = page.locator("#sim-map").bounding_box()
     assert box is not None
@@ -115,6 +116,7 @@ def test_app_loads(page: Page):
     expect(page.get_by_text("시뮬레이터 제어")).to_be_visible()
     expect(page.get_by_text("격자 크기 (m)")).to_be_visible()
     expect(page.get_by_role("heading", name="트래픽 세부 설정")).to_be_visible()
+    expect(page.get_by_text("동적 트래픽 모드")).to_be_visible()
     expect(page.get_by_role("heading", name="알고리즘")).to_be_visible()
     expect(page.get_by_role("heading", name="전파 모델")).to_be_visible()
     expect(page.get_by_role("button", name="영역 지정")).to_be_visible()
@@ -139,6 +141,15 @@ def test_traffic_pattern_selectbox_has_all_patterns(page: Page):
     _ensure_expander_open(page, "트래픽 세부 설정")
     page.locator("#traffic-pattern").click()
     for name in PATTERN_CHOICES:
+        expect(page.get_by_role("option", name=name, exact=True)).to_be_visible()
+
+
+def test_dynamic_traffic_type_dropdown_has_expected_options(page: Page):
+    """동적 트래픽 모드에서 동적 유형 dropdown이 노출되는지."""
+    page.get_by_text("동적 트래픽 모드").click()
+    expect(page.get_by_text("동적 트래픽 유형")).to_be_visible()
+    page.locator("#dynamic-traffic-type").click()
+    for name in ("고정 위치 변동", "이동형 핫스팟", "위치 전환형"):
         expect(page.get_by_role("option", name=name, exact=True)).to_be_visible()
 
 
