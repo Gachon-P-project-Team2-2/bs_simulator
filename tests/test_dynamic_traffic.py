@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from app import compute_dynamic_scenario_summary, compute_frame_metrics
+from app import (
+    APP_STATE,
+    _LAST_ACCESSED,
+    apply_algo_compare_row,
+    compute_dynamic_scenario_summary,
+    compute_frame_metrics,
+    render_algo_compare_results,
+)
 from environment import SyntheticEnvironment
 
 
@@ -110,3 +117,51 @@ def test_frame_metrics_change_with_dynamic_frame():
     assert frame0["total_traffic"] != frame1["total_traffic"]
     assert summary is not None
     assert summary["avg_traffic_coverage_pct"] >= summary["worst_traffic_coverage_pct"]
+
+
+def test_algo_compare_results_are_selectable_and_apply_selected_row():
+    session_id = "unit-test-algo-compare"
+    APP_STATE[session_id] = {
+        "algo_compare_results": [
+            {
+                "algo": "Algo A",
+                "score": 10.0,
+                "covered_traffic": 5.0,
+                "coverage_pct": 50.0,
+                "area_pct": 40.0,
+                "mean_sinr_db": 3.2,
+                "total_throughput_mbps": 12.0,
+                "elapsed_sec": 0.2,
+                "opt_results": {"algo": "Algo A", "score": 10.0},
+                "opt_stats": {"n_stations": 1},
+            },
+            {
+                "algo": "Algo B",
+                "score": 20.0,
+                "covered_traffic": 8.0,
+                "coverage_pct": 80.0,
+                "area_pct": 70.0,
+                "mean_sinr_db": 5.1,
+                "total_throughput_mbps": 18.0,
+                "elapsed_sec": 0.4,
+                "opt_results": {"algo": "Algo B", "score": 20.0},
+                "opt_stats": {"n_stations": 2},
+            },
+        ]
+    }
+
+    try:
+        rendered = render_algo_compare_results({"version": 1}, session_id)
+        table = rendered[1].children[0]
+
+        assert table.id == "algo-compare-datatable"
+        assert table.row_selectable == "single"
+
+        meta, _status = apply_algo_compare_row([1], session_id)
+
+        assert "version" in meta
+        assert APP_STATE[session_id]["opt_results"]["algo"] == "Algo B"
+        assert APP_STATE[session_id]["opt_stats"]["n_stations"] == 2
+    finally:
+        APP_STATE.pop(session_id, None)
+        _LAST_ACCESSED.pop(session_id, None)

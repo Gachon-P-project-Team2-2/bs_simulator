@@ -2281,7 +2281,7 @@ def serve_layout():
                                                                        "fontSize": "12px"},
                                                             ),
 
-                                                            html.H3("비교 결과",
+                                                            html.H3("Sweep 결과",
                                                                     className="section-header",
                                                                     style={"marginTop": "var(--sp-base)"}),
                                                             html.Div(id="algo-compare-results"),
@@ -4506,7 +4506,7 @@ def _run_sweep_thread(session_id: str) -> None:
     except Exception:
         import traceback
         tb = traceback.format_exc()
-        log.error("sweep thread error: %s", tb)
+        _opt_logger.error("sweep thread error: %s", tb)
         try:
             state["sweep_progress"] = {"running": False, "done": False, "error": tb}
         except Exception:
@@ -4953,6 +4953,9 @@ def _run_algo_compare_thread(session_id: str) -> None:
                     "stations_geo": stations_df.to_dict("records"),
                     "history": result.history,
                     "prop_params": {**prop, "tx_power_dbm": tx_k.tolist()},
+                    "score_mode": score_mode,
+                    "spectral_efficiency_mode": spectral_efficiency_mode,
+                    "weight_scale": weight_scale,
                 },
                 "opt_stats": metrics,
             })
@@ -4966,7 +4969,7 @@ def _run_algo_compare_thread(session_id: str) -> None:
     except Exception:
         import traceback
         tb = traceback.format_exc()
-        log.error("algo_compare thread error: %s", tb)
+        _opt_logger.error("algo_compare thread error: %s", tb)
         try:
             state["algo_compare_progress"] = {"running": False, "done": False, "error": tb}
         except Exception:
@@ -5087,6 +5090,7 @@ def render_algo_compare_results(compare_meta, session_id):
     table_best_idx = int(max(range(len(table_rows)), key=lambda i: table_rows[i]["score"]))
 
     table = dash_table.DataTable(
+        id="algo-compare-datatable",
         data=table_rows,
         columns=[
             {"name": "알고리즘", "id": "algo"},
@@ -5098,8 +5102,10 @@ def render_algo_compare_results(compare_meta, session_id):
             {"name": "시간(s)", "id": "elapsed_sec"},
         ],
         page_size=10,
+        row_selectable="single",
+        selected_rows=[],
         style_table={"overflowX": "auto"},
-        style_cell={"fontSize": "11px", "padding": "3px 6px"},
+        style_cell={"fontSize": "11px", "padding": "3px 6px", "cursor": "pointer"},
         style_header={"fontSize": "11px", "fontWeight": "700"},
         style_data_conditional=[
             {
@@ -5107,8 +5113,17 @@ def render_algo_compare_results(compare_meta, session_id):
                 "backgroundColor": "rgba(20, 158, 97, 0.10)",
                 "fontWeight": "700",
                 "color": "#026b3f",
-            }
+            },
+            {
+                "if": {"state": "selected"},
+                "backgroundColor": "rgba(133, 91, 251, 0.10)",
+                "border": "1px solid #7132f5",
+            },
         ],
+    )
+    hint = html.Div(
+        "행을 클릭하면 해당 알고리즘 결과를 지도에 표시합니다.",
+        style={"fontSize": "11px", "color": "#6b7280", "marginTop": "4px"},
     )
 
     apply_btn = html.Button(
@@ -5121,9 +5136,37 @@ def render_algo_compare_results(compare_meta, session_id):
     return [
         dcc.Graph(figure=fig, config={"displayModeBar": False},
                   style={"marginTop": "8px"}),
-        html.Div(table, style={"marginTop": "6px"}),
+        html.Div([table, hint], style={"marginTop": "6px"}),
         apply_btn,
     ]
+
+
+@app.callback(
+    Output("opt-meta", "data", allow_duplicate=True),
+    Output("algo-compare-status", "children", allow_duplicate=True),
+    Input("algo-compare-datatable", "selected_rows"),
+    State("session-id", "data"),
+    prevent_initial_call=True,
+)
+def apply_algo_compare_row(selected_rows, session_id):
+    if not selected_rows:
+        raise PreventUpdate
+
+    idx = selected_rows[0]
+    state = get_session_state(session_id)
+    results = state.get("algo_compare_results")
+    if not results or idx >= len(results):
+        raise PreventUpdate
+
+    chosen = results[idx]
+    state["opt_results"] = chosen["opt_results"]
+    state["opt_stats"] = chosen["opt_stats"]
+
+    msg = html.Span(
+        f"적용: {chosen['algo']} | score={chosen['score']:.2f}",
+        style={"color": "#7132f5", "fontWeight": "600", "fontSize": "12px"},
+    )
+    return version_token(), msg
 
 
 @app.callback(
